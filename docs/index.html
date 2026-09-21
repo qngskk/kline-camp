@@ -63,17 +63,39 @@
 
     <div class="card">
       <h3>今日操作 <span class="sub" id="act-date"></span></h3>
-      <div class="btn-row">
-        <button class="act buy" id="btn-buy">买入</button>
-        <button class="act sell" id="btn-sell">卖出全部</button>
+      <div class="pos-line">
+        <span>仓位 <b id="act-pos">0.0%</b></span>
+        <span>可卖 <b id="act-sellable">0 股</b></span>
+      </div>
+      <div class="grp">
+        <span class="glabel up">加仓</span>
+        <div class="btn-row tiny">
+          <button class="tbtn buy" data-add="0.25">1/4</button>
+          <button class="tbtn buy" data-add="0.3333333333">1/3</button>
+          <button class="tbtn buy" data-add="0.5">1/2</button>
+          <button class="tbtn buy" data-add="1">满仓</button>
+        </div>
+      </div>
+      <div class="grp">
+        <span class="glabel down">减仓</span>
+        <div class="btn-row tiny">
+          <button class="tbtn sell" data-reduce="0.25">1/4</button>
+          <button class="tbtn sell" data-reduce="0.3333333333">1/3</button>
+          <button class="tbtn sell" data-reduce="0.5">1/2</button>
+          <button class="tbtn sell" data-reduce="1">清仓</button>
+        </div>
       </div>
       <div class="btn-row">
-        <button class="act hold" id="btn-hold">观望 / 下一日</button>
+        <button class="act hold" id="btn-next">进入下一日</button>
       </div>
       <div class="btn-row">
         <button class="act end" id="btn-end">结束交易并结算</button>
       </div>
-      <div class="hint">成交价 = <b>次日开盘价</b>；涨停开盘买不进、跌停开盘卖不出。</div>
+      <div class="grp hidden" id="pending-box">
+        <span class="glabel">今日委托 · 次日开盘价成交</span>
+        <div id="pending-list" class="pending-list"></div>
+      </div>
+      <div class="hint" id="act-hint">—</div>
     </div>
 
     <div class="card grow">
@@ -100,13 +122,21 @@
       <div class="hint" id="pool-hint">—</div>
     </div>
     <div class="field">
-      <label class="flabel">仓位（每次买入动用总资产的比例）</label>
+      <label class="flabel">默认加仓比例（下单按钮仍可临时改）</label>
       <div class="seg" id="seg-pos">
         <button data-pos="1" class="on">满仓</button>
         <button data-pos="0.5">1/2</button>
         <button data-pos="0.3333333333">1/3</button>
         <button data-pos="0.25">1/4</button>
       </div>
+    </div>
+    <div class="field">
+      <label class="flabel">成交口径</label>
+      <div class="seg" id="seg-fill">
+        <button data-fill="close" class="on">尾盘即时成交</button>
+        <button data-fill="open">次日开盘价成交</button>
+      </div>
+      <div class="hint" id="fill-hint">—</div>
     </div>
     <div class="field">
       <label class="flabel">操作交易日</label>
@@ -139,15 +169,6 @@
   <div class="dialog small">
     <h2 id="cf-title">确认</h2>
     <div id="cf-body" class="cf-body"></div>
-    <div id="cf-pos" class="field hidden">
-      <label class="flabel">买入仓位</label>
-      <div class="seg" id="seg-pos2">
-        <button data-pos="1">满仓</button>
-        <button data-pos="0.5">1/2</button>
-        <button data-pos="0.3333333333">1/3</button>
-        <button data-pos="0.25">1/4</button>
-      </div>
-    </div>
     <div class="dialog-actions">
       <button class="ghost" id="cf-cancel">取消</button>
       <button class="primary" id="cf-ok">确定</button>
@@ -163,10 +184,15 @@
       <li>标的来自本地通达信日线，价格已做<b>前复权</b>（除权除息缺口被抹平，最新价不变）。</li>
       <li>随机抽一只股票 + 一个随机日期，日期保证<b>之前有 3 个月 K 线、之后至少还有整个操作窗口</b>。</li>
       <li>每一轮你只能看到「已揭示」的 K 线，<b>决策不得使用未来数据</b>。</li>
-      <li>买入 / 卖出 / 结束交易清仓，<b>一律以次日开盘价成交</b>；观望则直接进入下一日。</li>
-      <li>仓位 = 本次买入动用当前总资产的比例（满仓 / 1/2 / 1/3 / 1/4），按一手 100 股向下取整。</li>
-      <li>涨停开盘无法买入、跌停开盘无法卖出（主板 ±10%，创业板/科创板 ±20%）。</li>
+      <li><b>成交口径二选一</b>：
+        <br>· <b>尾盘即时成交</b>——下单立刻按<b>当日收盘价</b>成交，同一天可以反复加仓 / 减仓，持仓、成本、浮盈实时变化；
+        <br>· <b>次日开盘价成交</b>——下单进入「今日委托」篮，可逐笔撤销，点「进入下一日」时统一按<b>次日开盘价</b>成交（先卖后买）。</li>
+      <li><b>加仓</b>：加 1/4 / 1/3 / 1/2 = 买入「当前总资产 × 比例」的股票；「满仓」= 用光全部可用现金。</li>
+      <li><b>减仓</b>：减 1/4 / 1/3 / 1/2 = 卖出「当前可卖持仓 × 比例」；「清仓」= 卖出全部可卖持仓。均按一手 100 股向下取整。</li>
+      <li><b>T+1</b>：当日买入的股票当日不可卖（尾盘模式）；次日开盘价模式下委托本来就在次日成交，天然满足。</li>
+      <li>成交价触及涨停买不进、触及跌停卖不出（主板 ±10%，创业板/科创板 ±20%）。</li>
       <li>操作满 30 / 60 / 90 个交易日后自动结算，剩余持仓按最后一日收盘价折算。</li>
+      <li>「结束交易」：尾盘模式按当收即时清仓；次日开盘价模式放弃今日委托、按次日开盘价清仓。</li>
       <li>已剔除现行 ST 股、上市不足 250 个交易日的次新股、北交所与 B 股。</li>
     </ol>
     <div class="dialog-actions"><button class="primary" id="help-ok">知道了</button></div>

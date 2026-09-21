@@ -95,11 +95,12 @@ test('真实数据上跑完整局：满仓持有的组合收益 ≈ 个股区间
     const start = r.lo + 5;
     const s = new Session({
       bars: b, stock: { code: s0.code, name: s0.name, boardIdx: s0.boardIdx },
-      startIdx: start, horizon, position: 1, capital: 100000, fees: false,
+      startIdx: start, horizon, position: 1, capital: 100000, fees: false, fillMode: 'open',
     });
-    const first = s.submit('buy', 1);
+    const first = s.order('add', 1);
     assert.equal(first.ok, true, '首次买入应成功');
-    while (!s.finished) s.submit('hold');
+    s.nextDay();
+    while (!s.finished) s.nextDay();
     assert.equal(s.day, horizon);
     assert.equal(s.cur, start + horizon);
     const stockRet = b.close[s.cur] / b.open[start + 1] - 1;
@@ -125,15 +126,19 @@ test('真实数据上随机 300 局：不出现负现金 / 负持仓 / 未来数
     const b = bars(s0.code);
     let start = r.lo + Math.floor(rng() * (r.hi - r.lo + 1));
     if (!windowGapOk(b, start, horizon)) continue;
+    const fillMode = k % 2 ? 'open' : 'close';
     const s = new Session({
       bars: b, stock: { code: s0.code, name: s0.name, boardIdx: s0.boardIdx },
-      startIdx: start, horizon, position: 0.5, capital: 200000, fees: true,
+      startIdx: start, horizon, position: 0.5, capital: 200000, fees: true, fillMode,
     });
     runs++;
     let steps = 0;
     while (!s.finished && steps < 200) {
       const roll = rng();
-      s.submit(roll < 0.25 ? 'buy' : roll < 0.4 ? 'sell' : 'hold', [1, 0.5][steps % 2]);
+      if (roll < 0.22) s.order('add', [1, 0.5, 1 / 3][steps % 3]);
+      else if (roll < 0.4) s.order(roll < 0.32 ? 'reduce' : 'clear', 0.5);
+      else if (roll < 0.45 && s.pending.length) s.cancelOrder(s.pending[0].id);
+      s.nextDay();
       assert.ok(s.cash >= -1e-6, `${s0.code} 现金为负`);
       assert.ok(s.shares >= 0);
       assert.ok(Math.abs(s.equity - (s.cash + s.shares * b.close[s.cur])) < 1e-6);

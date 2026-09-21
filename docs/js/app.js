@@ -1,8 +1,12 @@
 /**
  * 重生之K线股王 · K线训练营 —— 主控制器
+ *
+ * 每日流程：
+ *   已揭示 bar[cur] → 反复加仓/减仓（尾盘模式即时成交；次日开盘模式进委托篮）
+ *   → 点「进入下一日」揭示 bar[cur+1] → 严格模式此时按开盘价成交委托篮 → 循环
  */
 import { decodeKLC, fmtDate } from './decode.js';
-import { Session, BOARDS, eligibleRange, pickStartIndex } from './sim.js';
+import { Session, BOARDS, FILL_MODES, eligibleRange, pickStartIndex } from './sim.js';
 import { KChart } from './chart.js';
 
 const $ = sel => document.getElementById(sel[0] === '#' ? sel.slice(1) : sel);
@@ -12,6 +16,10 @@ const POSITIONS = [
   { v: 1 / 3, label: '1/3 仓' },
   { v: 0.25, label: '1/4 仓' },
 ];
+const FILL_HINT = {
+  close: '下单立刻按<b>当日收盘价</b>成交，同一天可反复加仓 / 减仓，持仓与浮盈实时变化；当日买入的股票 T+1 才能卖。',
+  open: '下单进入「<b>今日委托</b>」篮，可逐笔撤销；点「进入下一日」时统一按<b>次日开盘价</b>成交（先卖后买）。',
+};
 
 const state = {
   stocks: [],
@@ -25,6 +33,7 @@ const state = {
   horizon: 30,
   capital: 100000,
   fees: true,
+  fillMode: 'close',
   picked: null,
 };
 
@@ -32,7 +41,8 @@ const state = {
 const money = x => (x < 0 ? '-' : '') + Math.abs(x).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const pct = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
 const cls = x => (x > 1e-9 ? 'up' : x < -1e-9 ? 'down' : 'flat');
-const posLabel = v => (POSITIONS.find(p => Math.abs(p.v - v) < 1e-6) || { label: v }).label;
+const posLabel = v => (POSITIONS.find(p => Math.abs(p.v - v) < 1e-6) || { label: (v * 100).toFixed(0) + '% 仓' }).label;
+const fillLabel = v => (FILL_MODES.find(m => m.v === v) || FILL_MODES[0]).label;
 
 function toast(msg, kind = 'info', ms = 2600) {
   let box = $('toast');
@@ -43,7 +53,7 @@ function toast(msg, kind = 'info', ms = 2600) {
   }
   const el = document.createElement('div');
   el.className = 'toast-item ' + kind;
-  el.textContent = msg;
+  el.innerHTML = msg;
   box.appendChild(el);
   setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 350); }, ms);
 }
@@ -135,12 +145,14 @@ async function startSession() {
       position: state.position,
       capital: state.capital,
       fees: state.fees,
+      fillMode: state.fillMode,
     });
 
     hide('#modal-setup');
     setupError('');
     renderAll(true);
-    toast(`开始训练：${horizon} 个交易日，${posLabel(state.position)}`, 'info', 2200);
+    toast(`开始训练：${horizon} 个交易日 · ${posLabel(state.position)} · ${fillLabel(state.fillMode)}`,
+          'info', 2400);
   } catch (e) {
     setupError(e.message || String(e));
   } finally {
@@ -154,7 +166,6 @@ function setupError(msg) { $('setup-err').textContent = msg || ''; }
 function resolvePick() {
   const raw = $('pick-input').value.trim();
   if (!raw) return null;
-  // 从建议里点选过：输入框里还留着该代码就直接用
   if (state.picked && raw.includes(state.picked.code.slice(2))) return state.picked;
   const digits = (raw.match(/\d{6}/) || [])[0];
   if (digits) {
@@ -178,7 +189,7 @@ function refreshStockLabel() {
     : `${s.stock.name} ${s.stock.code.toUpperCase()}`;
   const p = state.mode === 'random' && !s.finished ? '？？' : posLabel(state.position);
   $('period-label').textContent =
-    `${s.horizon} 个交易日 · ${p} · 第 ${Math.min(s.day + 1, s.horizon)} 日`;
+    `${s.horizon} 个交易日 · ${p} · ${s.fillModeLabel} · 第 ${Math.min(s.day + 1, s.horizon)} 日`;
 }
 
 function renderAll(fit = false) {
@@ -209,14 +220,36 @@ function renderAll(fit = false) {
   $('pos-bar').style.width = (s.progress * 100).toFixed(1) + '%';
   $('pos-hint').innerHTML = s.finished
     ? '本轮已结束。点「重新开始」换一局。'
-    : `还需操作 <b>${s.daysLeft}</b> 个交易日；下一个交易日 <b>${fmtDate(s.nextDate)}</b>。`;
-  $('act-date').textContent = fmtDate(s.date);
+    : `已操作 <b>${s.day}</b> / ${s.horizon} 日，还剩 <b>${s.daysLeft}</b> 日；仓位 <b>${(s.positionPct * 100).toFixed(1)}%</b>。`;
 
+  // ---- 今日操作
+  $('act-date').textContent = fmtDate(s.date);
+  $('act-pos').textContent = (s.positionPct * 100).toFixed(1) + '%';
+  $('act-sellable').textContent = s.sellableShares + ' 股';
   const canAct = s.canAct;
-  $('btn-buy').disabled = !canAct;
-  $('btn-sell').disabled = !canAct || s.shares <= 0;
-  $('btn-hold').disabled = !canAct;
+  const sellable = s.sellableShares - s.queuedSellShares;
+  document.querySelectorAll('#side [data-add]').forEach(b => { b.disabled = !canAct; });
+  document.querySelectorAll('#side [data-reduce]').forEach(b => { b.disabled = !canAct; });
+  $('act-sellable').className = sellable <= 0 ? 'down' : '';
+  $('btn-next').disabled = !canAct;
   $('btn-end').disabled = s.finished;
+
+  const pend = $('pending-box');
+  if (s.fillMode === 'open' && s.pending.length) {
+    pend.classList.remove('hidden');
+    $('pending-list').innerHTML = s.pending.map(o =>
+      `<span class="pend ${o.side}">${o.label}<i data-cancel="${o.id}" title="撤销">×</i></span>`).join('');
+    $('pending-list').querySelectorAll('[data-cancel]').forEach(el =>
+      el.addEventListener('click', () => { s.cancelOrder(Number(el.dataset.cancel)); renderAll(false); }));
+  } else {
+    pend.classList.add('hidden');
+  }
+
+  $('act-hint').innerHTML = s.finished
+    ? '本轮已结束。'
+    : s.fillMode === 'close'
+      ? `尾盘即时：按今收 <b>${s.price.toFixed(2)}</b> 成交，可反复加减仓；定好仓位后点「进入下一日」。`
+      : `今日委托将在 <b>${fmtDate(s.nextDate)} 开盘价</b>成交；可继续加减仓，或点委托标签上的 × 撤销。`;
 
   // 成交流水
   const box = $('log-list');
@@ -227,7 +260,7 @@ function renderAll(fit = false) {
       const side = t.side === 'buy' ? '买' : t.side === 'sell' ? '卖' : '结算';
       const pnl = (t.pnl != null)
         ? `<span class="pnl ${t.pnl >= 0 ? 'pos' : 'neg'}">${t.pnl >= 0 ? '+' : ''}${Math.round(t.pnl)}</span>` : '';
-      return `<div class="log-row ${t.side}"><span>${side} ${t.shares}股</span>` +
+      return `<div class="log-row ${t.side}"><span>${t.label || side} ${t.shares}股</span>` +
              `<span class="d">${fmtDate(t.date)} @${t.price.toFixed(2)}</span>${pnl}</div>`;
     }).join('');
   }
@@ -243,122 +276,114 @@ function renderAll(fit = false) {
 
 // ---------------------------------------------------------------- 操作
 let confirmCb = null;
-let confirmKind = null;
 
-function openConfirm({ title, body, withPos = false, okText = '确定', kind = null, onOk }) {
+function openConfirm({ title, body, okText = '确定', onOk }) {
   $('cf-title').textContent = title;
   $('cf-body').innerHTML = body;
-  $('cf-pos').classList.toggle('hidden', !withPos);
   $('cf-ok').textContent = okText;
-  confirmKind = kind;
   $('cf-ok').disabled = false;
-  if (withPos) { setSeg('#seg-pos2', 'pos', state.position); updateBuyPreview(); }
   confirmCb = onOk;
   show('#modal-confirm');
 }
 
-function closeConfirm() { confirmCb = null; confirmKind = null; hide('#modal-confirm'); }
+function closeConfirm() { confirmCb = null; hide('#modal-confirm'); }
 
-function selectedPos(sel) {
-  const b = document.querySelector(sel + ' button.on');
-  return b ? parseFloat(b.dataset.pos) : state.position;
-}
-
-function updateBuyPreview() {
-  if (confirmKind !== 'buy') return;
+/** 下单统一入口：type = add | full | reduce | clear */
+function placeOrder(type, fraction) {
   const s = state.session;
   if (!s) return;
-  const f = selectedPos('#seg-pos2');
-  const est = s.estimateBuy(f);
-  const ok = est.shares > 0;
-  $('cf-body').innerHTML =
-    `<div><span class="k">买入仓位</span> <b>${posLabel(f)}</b>（可用资金 ${money(s.cash)} 元）</div>` +
-    (ok
-      ? `<div><span class="k">预估数量</span> <b>约 ${est.shares} 股</b>（按今收 ${s.price.toFixed(2)} 估算）</div>`
-      : `<div style="color:#f87171">资金不足一手（100 股 ≈ ${money(s.price * 100)} 元），请调小仓位或换一局</div>`) +
-    `<div class="k" style="margin-top:6px">实际成交价 = <b style="color:#fbbf24">${fmtDate(s.nextDate)} 开盘价</b>，此刻不可见。</div>`;
-  $('cf-ok').disabled = !ok;
-}
-
-function doBuy() {
-  const s = state.session;
-  if (!s || !s.canAct) return;
-  openConfirm({
-    title: '确认买入',
-    body: '',
-    withPos: true,
-    kind: 'buy',
-    okText: '确定买入',
-    onOk: () => {
-      const frac = selectedPos('#seg-pos2');
-      state.position = frac;
-      const r = s.submit('buy', frac);
-      if (!r.ok) { toast(r.msg, 'warn'); return false; }
-      afterAdvance(r);
-      return true;
-    },
-  });
-}
-
-function doSell() {
-  const s = state.session;
-  if (!s || !s.canAct || s.shares <= 0) return;
-  openConfirm({
-    title: '确认卖出',
-    body: `<div><span class="k">卖出</span> <b>${s.shares} 股</b>（全部清仓）</div>` +
-          `<div><span class="k">成本价</span> ${s.avgCost.toFixed(2)} 元 · 今收 ${s.price.toFixed(2)} 元</div>` +
-          `<div class="k" style="margin-top:6px">实际成交价 = <b style="color:#fbbf24">${fmtDate(s.nextDate)} 开盘价</b>。</div>`,
-    kind: 'sell',
-    okText: '确定卖出',
-    onOk: () => {
-      const r = s.submit('sell');
-      if (!r.ok) { toast(r.msg, 'warn'); return false; }
-      afterAdvance(r);
-      return true;
-    },
-  });
-}
-
-function doHold() {
-  const s = state.session;
-  if (!s || !s.canAct) return;
-  const r = s.submit('hold');
+  const r = s.order(type, fraction);
   if (!r.ok) { toast(r.msg, 'warn'); return; }
-  afterAdvance(r);
+  if (r.queued) {
+    toast(`已加入今日委托：<b>${r.order.label}</b>（${fmtDate(s.nextDate)} 开盘价成交）`, 'info', 2200);
+  } else if (r.fill) {
+    const f = r.fill;
+    toast(`${fmtDate(f.date)} ${f.label}：${f.side === 'buy' ? '买入' : '卖出'} ${f.shares} 股 @ ${f.price.toFixed(2)}` +
+          (f.pnl != null ? `，本笔盈亏 ${f.pnl >= 0 ? '+' : ''}${Math.round(f.pnl)} 元` : ''),
+          f.side === 'buy' ? 'buy' : 'sell', 2800);
+  }
+  renderAll(false);
+}
+
+function doAdd(fraction) {
+  const s = state.session;
+  if (!s || !s.canAct) return;
+  const type = fraction >= 0.999999 ? 'full' : 'add';
+  const p = s.plan(type, fraction);            // 先试算：涨跌停 / 资金不足当场说清楚
+  if (!p.ok) { toast(p.msg, 'warn'); return; }
+  if (s.fillMode === 'close' && type === 'full') {
+    const est = p.order.budget == null ? s.cash : Math.min(s.cash, p.order.budget);
+    openConfirm({
+      title: '满仓买入',
+      body: `<div>将用光全部可用现金 <b>${money(s.cash)}</b> 元（本次额度 ${money(est)} 元），按今收 ${s.price.toFixed(2)} 元买入。</div>` +
+            `<div class="k" style="margin-top:6px">按一手 100 股向下取整，不足一手的零钱会留下。</div>`,
+      okText: '确定满仓',
+      onOk: () => { placeOrder(type, fraction); return true; },
+    });
+    return;
+  }
+  placeOrder(type, fraction);
+}
+
+function doReduce(fraction) {
+  const s = state.session;
+  if (!s || !s.canAct) return;
+  const type = fraction >= 0.999999 ? 'clear' : 'reduce';
+  const p = s.plan(type, fraction);            // 先试算：T+1 / 空仓 / 不足一手当场说清楚
+  if (!p.ok) { toast(p.msg, 'warn'); return; }
+  if (s.fillMode === 'close' && type === 'clear') {
+    openConfirm({
+      title: '清仓',
+      body: `<div>将卖出可卖的 <b>${p.order.shares}</b> 股，按今收 ${s.price.toFixed(2)} 元成交。</div>`,
+      okText: '确定清仓',
+      onOk: () => { placeOrder(type, fraction); return true; },
+    });
+    return;
+  }
+  placeOrder(type, fraction);
+}
+
+function doNext() {
+  const s = state.session;
+  if (!s || !s.canAct) return;
+  const r = s.nextDay();
+  if (!r.ok) { toast(r.msg, 'warn'); return; }
+  for (const f of r.fills) {
+    toast(`${fmtDate(f.date)} 开盘 ${f.label}：${f.side === 'buy' ? '买入' : '卖出'} ${f.shares} 股 @ ${f.price.toFixed(2)}` +
+          (f.pnl != null ? `，本笔盈亏 ${f.pnl >= 0 ? '+' : ''}${Math.round(f.pnl)} 元` : ''),
+          f.side === 'buy' ? 'buy' : 'sell', 2800);
+  }
+  for (const j of r.rejects) toast(`${fmtDate(s.date)} ${j.msg}`, 'warn', 3200);
+  renderAll(false);
+  if (s.finished) setTimeout(showResult, 420);
 }
 
 function doEnd() {
   const s = state.session;
   if (!s || s.finished) return;
-  const msg = s.shares > 0
-    ? (s.canAct ? `将以 <b>${fmtDate(s.nextDate)} 开盘价</b> 清仓并结算。`
-                : '将按最后一日收盘价清仓并结算。')
-    : '当前空仓，将直接按最新价结算。';
+  let msg;
+  if (s.shares <= 0) {
+    msg = '当前空仓，将直接按最新价结算。';
+  } else if (s.fillMode === 'close') {
+    msg = `将按<b>当日收盘价 ${s.price.toFixed(2)}</b> 清仓并结算` +
+          (s.boughtToday > 0 ? `（含今日买入的 ${s.boughtToday} 股，训练结束一并结算）` : '') + '。';
+  } else if (s.canAct) {
+    msg = `将放弃今日未成交委托，并以 <b>${fmtDate(s.nextDate)} 开盘价</b> 清仓结算。`;
+  } else {
+    msg = '将按最后一日收盘价清仓并结算。';
+  }
   openConfirm({
     title: '结束交易',
     body: `<div>${msg}</div><div class="k" style="margin-top:6px">结算后本轮不可继续。</div>`,
-    kind: 'end',
     okText: '结束并结算',
     onOk: () => {
       const r = s.endSession();
       if (!r.ok) { toast(r.msg, 'warn'); return false; }
-      afterAdvance(null);
+      renderAll(false);
+      setTimeout(showResult, 320);
       return true;
     },
   });
-}
-
-function afterAdvance(r) {
-  const s = state.session;
-  if (r && r.fill) {
-    const f = r.fill;
-    const what = f.side === 'buy' ? '买入' : '卖出';
-    toast(`${fmtDate(f.date)} 开盘 ${what} ${f.shares} 股 @ ${f.price.toFixed(2)}` +
-          (f.pnl != null ? `，本笔盈亏 ${f.pnl >= 0 ? '+' : ''}${Math.round(f.pnl)} 元` : ''),
-          f.side === 'buy' ? 'buy' : 'sell', 3000);
-  }
-  renderAll(false);
-  if (s.finished) setTimeout(showResult, 420);
 }
 
 // ---------------------------------------------------------------- 结算
@@ -370,7 +395,7 @@ function showResult() {
   el.textContent = pct(r.returnPct);
   el.className = 'big-return ' + (r.returnPct > 1e-9 ? 'pos' : r.returnPct < -1e-9 ? 'neg' : 'flat');
   $('rs-sub').textContent =
-    `${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}（${r.days} 个交易日）· ` +
+    `${fmtDate(r.startDate)} → ${fmtDate(r.endDate)}（${r.days} 个交易日 · ${r.fillModeLabel}）· ` +
     `初始 ${money(r.capital)} → 最终 ${money(r.finalEquity)}`;
 
   const dd = (x) => `${x >= 0 ? '+' : ''}${(x * 100).toFixed(2)}%`;
@@ -383,6 +408,7 @@ function showResult() {
     ['跑赢个股', dd(r.returnPct - r.benchmarkPct)],
     ['已实现盈亏', `${r.realized >= 0 ? '+' : ''}${money(r.realized)} 元`],
     ['交易费用', money(r.totalFee) + ' 元'],
+    ['成交口径', r.fillModeLabel],
     ['结算方式', r.settleReason === 'horizon' ? '操作期满自动结算' : '手动结束交易'],
     ['剩余持仓', r.holding ? '有（已折算）' : '无'],
   ];
@@ -393,10 +419,8 @@ function showResult() {
 }
 
 // ---------------------------------------------------------------- 设置界面
-function setSeg(sel, key, val) {
-  document.querySelectorAll(sel + ' button').forEach(b => {
-    b.classList.toggle('on', Math.abs(parseFloat(b.dataset[key]) - val) < 1e-6);
-  });
+function updateFillHint() {
+  $('fill-hint').innerHTML = FILL_HINT[state.fillMode];
 }
 
 function updatePoolHint() {
@@ -442,15 +466,21 @@ function bind() {
     state.position = parseFloat(b.dataset.pos);
     document.querySelectorAll('#seg-pos button').forEach(x => x.classList.toggle('on', x === b));
   }));
+  document.querySelectorAll('#seg-fill button').forEach(b => b.addEventListener('click', () => {
+    state.fillMode = b.dataset.fill;
+    document.querySelectorAll('#seg-fill button').forEach(x => x.classList.toggle('on', x === b));
+    updateFillHint();
+  }));
   document.querySelectorAll('#seg-horizon button').forEach(b => b.addEventListener('click', () => {
     state.horizon = parseInt(b.dataset.h, 10);
     document.querySelectorAll('#seg-horizon button').forEach(x => x.classList.toggle('on', x === b));
     updatePoolHint();
   }));
-  document.querySelectorAll('#seg-pos2 button').forEach(b => b.addEventListener('click', () => {
-    document.querySelectorAll('#seg-pos2 button').forEach(x => x.classList.toggle('on', x === b));
-    updateBuyPreview();
-  }));
+
+  document.querySelectorAll('#side [data-add]').forEach(b =>
+    b.addEventListener('click', () => doAdd(parseFloat(b.dataset.add))));
+  document.querySelectorAll('#side [data-reduce]').forEach(b =>
+    b.addEventListener('click', () => doReduce(parseFloat(b.dataset.reduce))));
 
   $('pick-input').addEventListener('input', renderSuggest);
   $('btn-start').addEventListener('click', () => {
@@ -459,9 +489,7 @@ function bind() {
     startSession();
   });
 
-  $('btn-buy').addEventListener('click', doBuy);
-  $('btn-sell').addEventListener('click', doSell);
-  $('btn-hold').addEventListener('click', doHold);
+  $('btn-next').addEventListener('click', doNext);
   $('btn-end').addEventListener('click', doEnd);
   $('btn-restart').addEventListener('click', () => { hide('#modal-result'); show('#modal-setup'); updatePoolHint(); });
   $('btn-help').addEventListener('click', () => show('#modal-help'));
@@ -485,10 +513,12 @@ function bind() {
 
   document.addEventListener('keydown', e => {
     if (e.target.tagName === 'INPUT' || document.querySelector('.modal:not(.hidden)')) return;
-    if (e.code === 'Space' || e.key === 'ArrowRight') { e.preventDefault(); doHold(); }
-    else if (e.key === 'b' || e.key === 'B') doBuy();
-    else if (e.key === 's' || e.key === 'S') doSell();
+    if (e.code === 'Space' || e.key === 'ArrowRight') { e.preventDefault(); doNext(); }
     else if (e.key === 'e' || e.key === 'E') doEnd();
+    else if (e.key === 'z' || e.key === 'Z') {
+      const s = state.session;
+      if (s && s.pending.length) { s.cancelOrder(s.pending[s.pending.length - 1].id); renderAll(false); }
+    }
   });
 }
 
@@ -506,6 +536,7 @@ function zoomBy(k) {
 async function init() {
   state.chart = new KChart($('chart'));
   bind();
+  updateFillHint();
   try {
     await loadIndex();
     $('pool-hint').textContent = '正在统计样本池…';

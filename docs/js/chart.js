@@ -266,23 +266,28 @@ export class KChart {
       ctx.fillText('成本 ' + this.cost.toFixed(2), g.x + 4, y - 8);
     }
 
-    // --- 买卖标记
+    // --- 买卖标记（同一根 K 线上的多笔按先后错开，避免叠在一起）
+    const stack = new Map();
     for (const m of this.marks) {
+      const k = stack.get(m.idx) || 0;
+      stack.set(m.idx, k + 1);
       if (m.idx < vf || m.idx > vt) continue;
       const x = this._x(m.idx, g);
       const buy = m.side === 'buy';
-      const y = buy ? yP(bars.low[m.idx]) + 16 : yP(bars.high[m.idx]) - 16;
-      ctx.fillStyle = buy ? '#ef4444' : '#22c55e';
+      const col = m.settle ? '#fbbf24' : buy ? '#ef4444' : '#22c55e';
+      const gapY = 15;
+      const y = buy ? yP(bars.low[m.idx]) + 15 + k * gapY : yP(bars.high[m.idx]) - 15 - k * gapY;
+      ctx.fillStyle = col;
       ctx.beginPath();
-      if (buy) { ctx.moveTo(x, y - 12); ctx.lineTo(x - 6, y); ctx.lineTo(x + 6, y); }
-      else { ctx.moveTo(x, y + 12); ctx.lineTo(x - 6, y); ctx.lineTo(x + 6, y); }
+      if (buy) { ctx.moveTo(x, y - 11); ctx.lineTo(x - 6, y); ctx.lineTo(x + 6, y); }
+      else { ctx.moveTo(x, y + 11); ctx.lineTo(x - 6, y); ctx.lineTo(x + 6, y); }
       ctx.closePath(); ctx.fill();
       ctx.font = 'bold 10px ui-sans-serif, system-ui';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = buy ? '#ef4444' : '#22c55e';
-      ctx.fillText(buy ? 'B' : 'S', x, buy ? y + 8 : y - 8);
+      ctx.fillStyle = col;
+      ctx.fillText(m.settle ? '结' : buy ? 'B' : 'S', x, buy ? y + 8 : y - 8);
       ctx.fillStyle = 'rgba(226,232,240,0.9)';
-      ctx.fillText(m.price.toFixed(2), x, buy ? y + 19 : y - 19);
+      ctx.fillText(m.price.toFixed(2), x, buy ? y + 18 : y - 18);
       ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     }
 
