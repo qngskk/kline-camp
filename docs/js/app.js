@@ -617,7 +617,35 @@ function bind() {
     renderTrades();
   }));
 
-  $('chk-ma').addEventListener('change', e => state.chart.setShowMA(e.target.checked));
+  // 均线开关（默认开）
+  $('btn-ma').addEventListener('click', () => {
+    const on = !state.chart.showMA;
+    state.chart.setShowMA(on);
+    $('btn-ma').classList.toggle('on', on);
+    toast(on ? '已显示均线 MA5 / MA10 / MA20' : '已关闭均线显示', 'info', 1600);
+  });
+
+  // 手动划线
+  $('btn-draw').addEventListener('click', () => {
+    const on = !state.chart.drawMode;
+    state.chart.setDrawMode(on);
+    $('btn-draw').classList.toggle('on', on);
+    $('chart-tip').textContent = on
+      ? '划线模式：在图上按住鼠标拖出一条直线，松开即完成；再点「划线」退出'
+      : '滚轮缩放 · 拖拽平移 · 双击复位 · 悬停查看单根 K 线';
+    if (on) toast('划线模式：按住鼠标拖出一条直线，松开即完成', 'info', 2400);
+  });
+  $('btn-undo-line').addEventListener('click', () => {
+    if (state.chart.undoLine()) toast('已撤销上一条线', 'info', 1400);
+    else toast('没有可撤销的线', 'warn', 1400);
+  });
+  $('btn-clear-line').addEventListener('click', () => {
+    const n = state.chart.lines.length;
+    state.chart.clearLines();
+    toast(n ? `已清空 ${n} 条线` : '当前没有画线', n ? 'info' : 'warn', 1400);
+  });
+  state.chart.onLineChange = (n) => toast(`已画第 ${n} 条线`, 'info', 1400);
+
   $('btn-zoom-in').addEventListener('click', () => zoomBy(0.8));
   $('btn-zoom-out').addEventListener('click', () => zoomBy(1.25));
   $('btn-reset-view').addEventListener('click', () => {
@@ -648,6 +676,7 @@ function zoomBy(k) {
 // ---------------------------------------------------------------- 启动
 async function init() {
   state.chart = new KChart($('chart'));
+  window.__kline = state;        // 调试/自动化测试钩子：__kline.chart / __kline.session
   bind();
   updateFillHint();
   try {

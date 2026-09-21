@@ -9,10 +9,13 @@
 ![训练界面](docs/assets/session.png)
 
 <p align="center">
-  <img src="docs/assets/setup.png" width="24%" alt="开局设置">
-  <img src="docs/assets/pending.png" width="24%" alt="今日委托篮">
-  <img src="docs/assets/result.png" width="24%" alt="结算面板">
-  <img src="docs/assets/trades.png" width="24%" alt="成交明细">
+  <img src="docs/assets/setup.png" width="32%" alt="开局设置">
+  <img src="docs/assets/pending.png" width="32%" alt="今日委托篮">
+  <img src="docs/assets/lines.png" width="32%" alt="均线开关与手动划线">
+</p>
+<p align="center">
+  <img src="docs/assets/result.png" width="32%" alt="结算面板">
+  <img src="docs/assets/trades.png" width="32%" alt="成交明细">
 </p>
 
 ---
@@ -24,7 +27,12 @@
    - 默认加仓比例：满仓 / 1/2 / 1/3 / 1/4（下单时仍可用按钮临时改）。
    - **成交口径**：`尾盘即时成交` 或 `次日开盘价成交`（见下方规则，这是两种不同训练模式）。
    - 操作交易日：30 / 60 / 90 个交易日；初始资金（默认 10 万）、是否计入交易费用。
-2. **读图**：随机日期**之前 3 个月**（≈60 个交易日）的 K 线与成交量柱会画出来，之后每天揭示一根。
+2. **读图与画线**：随机日期**之前 3 个月**（≈60 个交易日）的 K 线与成交量柱会画出来，之后每天揭示一根。
+   图上方工具栏：`均线`（MA5/10/20，**默认打开**，点一下可关）、`划线`、`↶`（撤销上一条）、
+   `清空`、`－`/`＋`（缩放）、`复位`。
+   **划线**：点 `划线` 进入划线模式，在图上**按住鼠标拖出一条直线，松开即完成**（可画多条）；
+   线中点会标出这条线两端的价格涨跌。画线锚在**数据坐标**（K 线位置 + 价格），
+   缩放、平移、进入下一日都不会漂。再点一次 `划线` 退出，退出后拖拽恢复为平移。
 3. **下委托**：每天有 `加仓 1/4 · 1/3 · 1/2 · 满仓` 与 `减仓 1/4 · 1/3 · 1/2 · 清仓` 八个按钮，
    点一下就往「**今日委托**」篮里加一笔（带 1/2/3… 顺序号）；
    成交前可以随时点标签上的 `×`（或按 `Z`）撤销。
@@ -92,7 +100,7 @@ kline-camp/
 │   ├── css/app.css           深色主题（红涨绿跌）
 │   ├── js/decode.js          KLC1 二进制行情解码
 │   ├── js/sim.js             训练仿真引擎（下单/推进分离、双成交口径、加减仓、T+1、成交快照）
-│   ├── js/chart.js           Canvas K线 + 成交量 + 标记 + 十字光标
+│   ├── js/chart.js           Canvas K线 + 成交量 + 标记 + 均线开关 + 手动划线 + 十字光标
 │   ├── js/app.js             主控制器（设置 / 下单 / 结算 / 渲染）
 │   └── data/                 构建产物：{code}.bin × 4997 + index.json + manifest.json
 ├── src/                      数据层（复用 workspace 既有 stockpick 工程实现）

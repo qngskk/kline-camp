@@ -40,6 +40,9 @@ export class KChart {
     this.drag = null;
     this.maPeriods = [5, 10, 20];
     this.showMA = true;
+    this.lines = [];        // 手动画线，锚在「数据坐标」(bar 下标, 价格)，缩放平移后不会漂
+    this.drawMode = false;
+    this.draft = null;
     this._bindEvents();
     this._ro = new ResizeObserver(() => this.resize());
     this._ro.observe(canvas.parentElement || canvas);
@@ -51,6 +54,8 @@ export class KChart {
     this.bars = bars;
     this.limit = limit;
     this.hover = null;
+    this.lines = [];
+    this.draft = null;
     if (bars) {
       this.ma = this.maPeriods.map(p => movingAverage(bars.close, p));
       const end = limit;
@@ -73,6 +78,17 @@ export class KChart {
   }
 
   setMarks(marks) { this.marks = marks || []; this.render(); }
+
+  /** 手动划线模式开关 */
+  setDrawMode(on) {
+    this.drawMode = !!on;
+    this.draft = null;
+    this.canvas.style.cursor = this.drawMode ? 'crosshair' : 'default';
+    this.render();
+  }
+
+  clearLines() { this.lines = []; this.draft = null; this.render(); return this.lines.length; }
+  undoLine() { const n = this.lines.pop(); this.draft = null; this.render(); return !!n; }
   setCost(price) { this.cost = price; this.render(); }
   setShowMA(on) { this.showMA = !!on; this.render(); }
 
@@ -171,6 +187,7 @@ export class KChart {
 
     const yP = p => g.price.y + (pmax - p) / (pmax - pmin) * g.price.h;
     const yV = v => g.vol.y + g.vol.h - (v / vmax) * g.vol.h;
+    this._scale = { pmin, pmax };          // 供屏幕坐标 ↔ 数据坐标换算
 
     // --- 网格与价格轴
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
@@ -291,6 +308,48 @@ export class KChart {
       ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     }
 
+    // --- 手动画线（剪裁在价格区内）
+    if (this.lines.length || this.draft) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(g.price.x, g.price.y, g.price.w, g.price.h);
+      ctx.clip();
+      const stroke = (L, dashed) => {
+        const x0 = this._x(L.i0, g), y0 = yP(L.p0);
+        const x1 = this._x(L.i1, g), y1 = yP(L.p1);
+        ctx.save();
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.lineWidth = dashed ? 1.2 : 1.6;
+        ctx.shadowColor = 'rgba(2,6,23,.95)';
+        ctx.shadowBlur = 4;
+        if (dashed) ctx.setLineDash([5, 4]);
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        ctx.restore();
+        if (!dashed) {
+          ctx.fillStyle = '#e2e8f0';
+          for (const [x, y] of [[x0, y0], [x1, y1]]) {
+            ctx.beginPath(); ctx.arc(x, y, 2.6, 0, Math.PI * 2); ctx.fill();
+          }
+          if (L.p0 > 0 && Math.abs(L.i1 - L.i0) >= 2) {
+            const chg = L.p1 / L.p0 - 1;
+            const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+            ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            const txt = (chg >= 0 ? '+' : '') + (chg * 100).toFixed(2) + '%';
+            const w = ctx.measureText(txt).width + 8;
+            const ly = my - 13 < g.price.y + 8 ? my + 13 : my - 13;
+            ctx.fillStyle = 'rgba(15,23,42,.9)';
+            ctx.fillRect(mx - w / 2, ly - 7, w, 14);
+            ctx.fillStyle = chg >= 0 ? '#fca5a5' : '#86efac';
+            ctx.fillText(txt, mx, ly);
+          }
+        }
+      };
+      for (const L of this.lines) stroke(L, false);
+      if (this.draft && (this.draft.i0 !== this.draft.i1 || this.draft.p0 !== this.draft.p1)) stroke(this.draft, true);
+      ctx.restore();
+    }
+
     // --- 十字光标
     if (this.hover != null && this.hover >= vf && this.hover <= vt) {
       const i = this.hover;
@@ -350,6 +409,15 @@ export class KChart {
     ctx.textBaseline = 'alphabetic';
   }
 
+  /** 屏幕坐标 → 数据坐标（bar 下标 + 价格），用于手动画线的锚点 */
+  toData(px, py) {
+    const g = this._geom();
+    const s = this._scale || { pmin: 0, pmax: 1 };
+    const i = this._idxAt(px, g);
+    const p = s.pmax - (py - g.price.y) / g.price.h * (s.pmax - s.pmin);
+    return { i, p: Math.round(p * 100) / 100 };
+  }
+
   // ---- 交互 --------------------------------------------------------------
   _bindEvents() {
     const el = this.canvas;
@@ -371,6 +439,14 @@ export class KChart {
 
     el.addEventListener('pointerdown', e => {
       if (!this.bars) return;
+      const rect = el.getBoundingClientRect();
+      if (this.drawMode) {                       // 划线模式：按下=起点
+        el.setPointerCapture(e.pointerId);
+        const d = this.toData(e.clientX - rect.left, e.clientY - rect.top);
+        this.draft = { i0: d.i, p0: d.p, i1: d.i, p1: d.p };
+        this.render();
+        return;
+      }
       el.setPointerCapture(e.pointerId);
       this.drag = { x: e.clientX, from: this.viewFrom, to: this.viewTo, moved: false };
     });
@@ -378,6 +454,13 @@ export class KChart {
       if (!this.bars) return;
       const rect = el.getBoundingClientRect();
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
+      if (this.drawMode && this.draft) {         // 拖动中：实时预览终点
+        const d = this.toData(px, py);
+        this.draft.i1 = d.i;
+        this.draft.p1 = d.p;
+        this.render();
+        return;
+      }
       if (this.drag) {
         const g = this._geom();
         const cw = g.plotW / (this.drag.to - this.drag.from + 1);
@@ -395,7 +478,16 @@ export class KChart {
       this.hoverY = py;
       this.render();
     });
-    const endDrag = () => { this.drag = null; };
+    const endDrag = () => {
+      if (this.draft) {                          // 松开=终点，太短就丢弃
+        const L = this.draft;
+        if (L.i1 !== L.i0 || L.p1 !== L.p0) this.lines.push({ ...L });
+        this.draft = null;
+        this.render();
+        if (this.onLineChange) this.onLineChange(this.lines.length);
+      }
+      this.drag = null;
+    };
     el.addEventListener('pointerup', endDrag);
     el.addEventListener('pointercancel', endDrag);
     el.addEventListener('pointerleave', () => {

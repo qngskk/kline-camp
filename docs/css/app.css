@@ -87,6 +87,11 @@ b { font-variant-numeric: tabular-nums; }
 }
 .mini:last-of-type { width: auto; padding: 0 9px; font-size: 12px; }
 .mini:hover { border-color: rgba(148,163,184,.5); }
+.mini.toggle { width: auto; padding: 0 10px; }
+.mini.toggle.on {
+  background: rgba(56,189,248,.18); border-color: var(--accent);
+  color: #bae6fd; font-weight: 600;
+}
 #chart-box { position: relative; flex: 1 1 auto; min-height: 0; }
 #chart-box canvas { display: block; position: absolute; inset: 0; }
 #chart-foot {

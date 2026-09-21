@@ -33,7 +33,10 @@
       <span id="stock-label" class="pill">—</span>
       <span id="period-label" class="pill">—</span>
       <span class="spacer"></span>
-      <label class="chk"><input type="checkbox" id="chk-ma" checked> 均线</label>
+      <button class="mini toggle on" id="btn-ma" title="显示 / 隐藏均线（默认显示）">均线</button>
+      <button class="mini toggle" id="btn-draw" title="手动划线：按住鼠标拖出一条直线">划线</button>
+      <button class="mini" id="btn-undo-line" title="撤销上一条线">↶</button>
+      <button class="mini" id="btn-clear-line" title="清空所有手画线">清空</button>
       <button class="mini" id="btn-zoom-out" title="缩小">－</button>
       <button class="mini" id="btn-zoom-in" title="放大">＋</button>
       <button class="mini" id="btn-reset-view" title="显示最后 120 根">复位</button>
@@ -42,7 +45,7 @@
     <div id="chart-foot">
       <span class="legend"><i class="dot" style="background:#ef4444"></i>涨 / 买入 <i class="dot" style="background:#22c55e"></i>跌 / 卖出</span>
       <span class="legend"><i class="line" style="background:#f59e0b"></i>MA5 <i class="line" style="background:#38bdf8"></i>MA10 <i class="line" style="background:#c084fc"></i>MA20</span>
-      <span class="legend muted">滚轮缩放 · 拖拽平移 · 双击复位 · 悬停查看单根 K 线</span>
+      <span class="legend muted" id="chart-tip">滚轮缩放 · 拖拽平移 · 双击复位 · 悬停查看单根 K 线</span>
     </div>
   </section>
 

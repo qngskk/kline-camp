@@ -86,6 +86,79 @@ check(px.up > 200 && px.down > 200, '画布没有画出红绿 K 线');
 check(/尾盘即时成交/.test(await text('#period-label')), '成交口径未显示在顶部');
 await shot('02-session');
 
+console.log('2b. 均线开关（默认打开）');
+const maPixels = () => page.evaluate(() => {
+  const src = document.getElementById('chart');
+  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+  const ctx = c.getContext('2d'); ctx.drawImage(src, 0, 0);
+  const d = ctx.getImageData(0, 0, c.width, c.height).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    if ((r > 230 && g > 140 && g < 190 && b < 60) ||          // #f59e0b MA5
+        (r > 40 && r < 90 && g > 170 && b > 230) ||           // #38bdf8 MA10
+        (r > 180 && g > 110 && g < 160 && b > 240)) n++;      // #c084fc MA20
+  }
+  return n;
+});
+const maOn = await maPixels();
+console.log('   默认均线像素:', maOn);
+check(maOn > 500, '默认应显示均线');
+check(await page.$eval('#btn-ma', el => el.classList.contains('on')), '均线按钮默认应为开启态');
+await page.click('#btn-ma'); await wait(350);
+const maOff = await maPixels();
+console.log('   关闭后均线像素:', maOff);
+check(maOff === 0, '关闭后不应再有均线像素');
+check(await page.$eval('#btn-ma', el => !el.classList.contains('on')), '关闭后按钮应为关闭态');
+await page.click('#btn-ma'); await wait(350);
+check((await maPixels()) > 500, '再次打开应恢复均线');
+
+console.log('2c. 手动划线：按住=起点，松开=终点');
+const cbox = await page.$eval('#chart', el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+const lineCount = () => page.evaluate(() => window.__kline.chart.lines.length);
+await page.click('#btn-draw'); await wait(200);
+check(await page.evaluate(() => window.__kline.chart.drawMode), '划线模式应开启');
+check(await page.$eval('#btn-draw', el => el.classList.contains('on')), '划线按钮应高亮');
+check(/划线模式/.test(await text('#chart-tip')), '底部提示应切成划线说明');
+await page.mouse.move(cbox.x + cbox.w * 0.25, cbox.y + cbox.h * 0.62);
+await page.mouse.down();
+await page.mouse.move(cbox.x + cbox.w * 0.45, cbox.y + cbox.h * 0.50, { steps: 5 });
+await page.mouse.move(cbox.x + cbox.w * 0.70, cbox.y + cbox.h * 0.32, { steps: 5 });
+await page.mouse.up();
+await wait(300);
+const l1 = await page.evaluate(() => window.__kline.chart.lines[0]);
+console.log('   第 1 条线:', JSON.stringify(l1));
+check((await lineCount()) === 1, '松开后应记录 1 条线');
+check(l1 && l1.i1 > l1.i0 && l1.p1 > l1.p0, '线的起终点应记录为数据坐标（右上方）');
+await page.mouse.move(cbox.x + cbox.w * 0.30, cbox.y + cbox.h * 0.35);
+await page.mouse.down();
+await page.mouse.move(cbox.x + cbox.w * 0.62, cbox.y + cbox.h * 0.45, { steps: 6 });
+await page.mouse.up();
+await wait(250);
+check((await lineCount()) === 2, '应能画第二条线');
+await shot('03-lines');
+await page.mouse.move(cbox.x + cbox.w / 2, cbox.y + cbox.h / 2);
+await page.mouse.wheel({ deltaY: -300 });
+await wait(250);
+const afterZoom = await page.evaluate(() => window.__kline.chart.lines[0]);
+check(JSON.stringify(afterZoom) === JSON.stringify(l1), '缩放后画线锚点应保持不变（锚在数据坐标）');
+await page.click('#btn-undo-line'); await wait(200);
+check((await lineCount()) === 1, '撤销后应剩 1 条');
+await page.click('#btn-clear-line'); await wait(200);
+check((await lineCount()) === 0, '清空后应为 0 条');
+await page.click('#btn-draw'); await wait(200);
+check(!(await page.evaluate(() => window.__kline.chart.drawMode)), '再点「划线」应退出划线模式');
+const vf0 = await page.evaluate(() => window.__kline.chart.viewFrom);
+await page.mouse.move(cbox.x + cbox.w * 0.5, cbox.y + cbox.h * 0.4);
+await page.mouse.down();
+await page.mouse.move(cbox.x + cbox.w * 0.66, cbox.y + cbox.h * 0.4, { steps: 6 });
+await page.mouse.up();
+await wait(250);
+const vf1 = await page.evaluate(() => window.__kline.chart.viewFrom);
+console.log('   退出划线后拖拽平移: viewFrom', vf0, '→', vf1);
+check(vf1 < vf0, '退出划线模式后拖拽应恢复平移');
+await page.click('#btn-reset-view'); await wait(250);
+
 console.log('3. 委托篮：同日多笔加仓，点「进入下一日」才成交');
 const posOf = async () => parseFloat((await text('#act-pos')).replace('%', ''));
 const sharesOf = async () => {
