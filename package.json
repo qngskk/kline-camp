@@ -6,6 +6,9 @@
   "description": "重生之K线股王 · K线训练营（静态站 + 通达信前复权数据构建）",
   "scripts": {
     "test": "node --test tests/sim.test.js tests/decode.test.js tests/integration.test.js",
+    "audit:data": "${PY:-../.venv_tdx/bin/python} tools/verify_data.py 300",
+    "audit:sim": "${PY:-../.venv_tdx/bin/python} tools/verify_sim.py 20",
+    "audit": "npm run audit:data && npm run audit:sim",
     "serve": "python3 -m http.server 8123 --directory docs"
   }
 }

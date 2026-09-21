@@ -42,6 +42,12 @@ const money = x => (x < 0 ? '-' : '') + Math.abs(x).toLocaleString('zh-CN', { mi
 const pct = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%';
 const cls = x => (x > 1e-9 ? 'up' : x < -1e-9 ? 'down' : 'flat');
 const posLabel = v => (POSITIONS.find(p => Math.abs(p.v - v) < 1e-6) || { label: (v * 100).toFixed(0) + '% 仓' }).label;
+/** 按钮上的比例可能写成 '1/3' 这种精确分数，避免 0.3333333333 带来的取整误差 */
+const parseFrac = v => {
+  const t = String(v);
+  if (t.includes('/')) { const [a, b] = t.split('/').map(Number); return a / b; }
+  return parseFloat(t);
+};
 const fillLabel = v => (FILL_MODES.find(m => m.v === v) || FILL_MODES[0]).label;
 
 function toast(msg, kind = 'info', ms = 2600) {
@@ -405,7 +411,8 @@ function showResult() {
     ['胜率', r.winRate == null ? '—' : (r.winRate * 100).toFixed(0) + '%'],
     ['最大回撤', dd(r.maxDrawdown)],
     ['同期个股涨跌', dd(r.benchmarkPct)],
-    ['跑赢个股', dd(r.returnPct - r.benchmarkPct)],
+    ['满仓持有收益', dd(r.buyHoldPct)],
+    ['跑赢满仓持有', dd(r.returnPct - r.buyHoldPct)],
     ['已实现盈亏', `${r.realized >= 0 ? '+' : ''}${money(r.realized)} 元`],
     ['交易费用', money(r.totalFee) + ' 元'],
     ['成交口径', r.fillModeLabel],
@@ -413,7 +420,7 @@ function showResult() {
     ['剩余持仓', r.holding ? '有（已折算）' : '无'],
   ];
   $('rs-stats').innerHTML = rows.map(([k, v]) =>
-    `<div><label>${k}</label><b class="${k === '同期个股涨跌' ? cls(r.benchmarkPct) : ''}">${v}</b></div>`).join('');
+    `<div><label>${k}</label><b class="${k === '同期个股涨跌' ? cls(r.benchmarkPct) : k === '满仓持有收益' || k === '跑赢满仓持有' ? cls(r.buyHoldPct - r.returnPct > 0 ? -1 : 1) : ''}">${v}</b></div>`).join('');
   refreshStockLabel();
   show('#modal-result');
 }
@@ -463,7 +470,7 @@ function bind() {
     $('pick-box').classList.toggle('hidden', state.mode !== 'pick');
   }));
   document.querySelectorAll('#seg-pos button').forEach(b => b.addEventListener('click', () => {
-    state.position = parseFloat(b.dataset.pos);
+    state.position = parseFrac(b.dataset.pos);
     document.querySelectorAll('#seg-pos button').forEach(x => x.classList.toggle('on', x === b));
   }));
   document.querySelectorAll('#seg-fill button').forEach(b => b.addEventListener('click', () => {
@@ -478,9 +485,9 @@ function bind() {
   }));
 
   document.querySelectorAll('#side [data-add]').forEach(b =>
-    b.addEventListener('click', () => doAdd(parseFloat(b.dataset.add))));
+    b.addEventListener('click', () => doAdd(parseFrac(b.dataset.add))));
   document.querySelectorAll('#side [data-reduce]').forEach(b =>
-    b.addEventListener('click', () => doReduce(parseFloat(b.dataset.reduce))));
+    b.addEventListener('click', () => doReduce(parseFrac(b.dataset.reduce))));
 
   $('pick-input').addEventListener('input', renderSuggest);
   $('btn-start').addEventListener('click', () => {

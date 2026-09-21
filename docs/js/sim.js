@@ -40,6 +40,16 @@ export const FILL_MODES = [
 
 export function round2(x) { return Math.round(x * 100) / 100; }
 
+/**
+ * 按「一手 100 股」向下取整。
+ * 浮点误差会让 3000 × (1/3) = 999.9999999999999，直接 floor 会少卖一手
+ * （UI 若传 0.3333333333 这种截断小数更明显，持仓 300 股时甚至会变成卖 0 股）。
+ * 这里加一个只对「贴着手数边界」生效的极小量修正。
+ */
+export function lotFloor(shares) {
+  return Math.floor(shares / LOT_SIZE + 1e-6) * LOT_SIZE;
+}
+
 /** YYYYMMDD -> 自 epoch 起的天数 */
 export function dayNum(d) {
   const y = Math.floor(d / 10000), m = Math.floor((d % 10000) / 100), dd = d % 100;
@@ -171,7 +181,15 @@ export class Session {
   get queuedSellShares() { return this.pending.filter(o => o.side === 'sell').reduce((a, o) => a + o.shares, 0); }
   get canAct() { return !this.finished && this.day < this.horizon && this.cur < this.lastIdx; }
   get nextDate() { return this.cur < this.lastIdx ? this.bars.dates[this.cur + 1] : null; }
+  /** 同期个股涨跌：从「随机日期收盘」到最后一日收盘（中性市场参照） */
   get benchmarkPct() { return this.price / this.bars.close[this.startIdx] - 1; }
+  /** 满仓持有收益：用玩家能成交的第一个价格（随机日次日开盘）买入并持有，
+   *  这才是与玩家收益率 apples-to-apples 的基准 */
+  get buyHoldPct() {
+    const i = Math.min(this.startIdx + 1, this.bars.n - 1);
+    const p0 = this.bars.open[i];
+    return p0 > 0 ? this.price / p0 - 1 : 0;
+  }
   get progress() { return this.day / this.horizon; }
   get daysLeft() { return Math.max(0, this.horizon - this.day); }
   get fillModeLabel() { return (FILL_MODES.find(m => m.v === this.fillMode) || FILL_MODES[0]).label; }
@@ -226,7 +244,7 @@ export class Session {
           ? '当日买入的股票 T+1 才能卖，明天再操作'
           : '今天的可卖持仓已经全部委托出去了' };
       }
-      let shares = clear ? base : Math.floor(base * f / LOT_SIZE) * LOT_SIZE;
+      let shares = clear ? base : lotFloor(base * f);
       if (shares <= 0) {
         return { ok: false, code: 'tooSmall',
                  msg: `减 ${fracLabel(f)} 不足 100 股（可卖 ${base} 股），请用「清仓」` };
@@ -310,7 +328,8 @@ export class Session {
         : Math.min(this.cash, order.budget != null ? order.budget : this.cash);
       const perLot = price * LOT_SIZE;
       const perLotCost = this.fees ? perLot * (1 + FEE.commission + FEE.transfer) : perLot;
-      let shares = perLotCost > 0 ? Math.floor(budget / perLotCost) * LOT_SIZE : 0;
+      // budget/perLotCost 是「手数」，乘回 100 换算成股数再按手取整
+      let shares = perLotCost > 0 ? lotFloor(budget / perLotCost * LOT_SIZE) : 0;
       while (shares > 0 && buyCost(price, shares, this.fees).total > this.cash + 1e-6) shares -= LOT_SIZE;
       if (shares <= 0) {
         return { ok: false, code: 'noFunds',
@@ -431,6 +450,7 @@ export class Session {
       winRate: this.wins + this.losses > 0 ? this.wins / (this.wins + this.losses) : null,
       maxDrawdown: this.maxDrawdown,
       benchmarkPct: this.benchmarkPct,
+      buyHoldPct: this.buyHoldPct,
       holding: this.shares > 0,
       settleReason: this.settleReason,
     };

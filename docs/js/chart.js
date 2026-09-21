@@ -327,7 +327,9 @@ export class KChart {
       ['收盘', b.close[i].toFixed(2)],
       ['涨跌', (chg >= 0 ? '+' : '') + (chg * 100).toFixed(2) + '%'],
       ['成交量', fmtVol(b.vol[i])],
-      ['成交额', fmtAmount(b.close[i] * b.vol[i]) + '元'],
+      // 本地只打包了 OHLCV，没有真实成交额；用典型价 (H+L+C)/3 估算，
+      // 与真实成交额的中位偏差 0.2%、99 分位 1.7%（见 tools/verify_data.py）
+      ['成交额≈', fmtAmount((b.high[i] + b.low[i] + b.close[i]) / 3 * b.vol[i]) + '元'],
     ];
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     const w = 118, lh = 15, h = lines.length * lh + 10;
