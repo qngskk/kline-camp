@@ -148,6 +148,51 @@ check(/^[+-]\d/.test(rs.ret), '结算面板没有突出收益率');
 check(/尾盘即时成交/.test(rs.sub), '结算应标注成交口径');
 await shot('05-result');
 
+console.log('5b. 成交明细面板');
+{
+  const client = await page.createCDPSession();
+  await client.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: SHOTS });
+}
+await page.waitForSelector('#modal-result:not(.hidden)');
+await page.click('#rs-trades');
+await page.waitForSelector('#modal-trades:not(.hidden)');
+const td = await page.evaluate(() => ({
+  head: [...document.querySelectorAll('#td-table th')].map(e => e.textContent),
+  rows: document.querySelectorAll('#td-table tbody tr').length,
+  first: [...document.querySelectorAll('#td-table tbody tr:first-child td')].map(e => e.textContent),
+  foot: document.getElementById('td-foot').textContent.replace(/\s+/g, ' '),
+}));
+console.log('   列:', td.head.join(' | '));
+console.log('   首行:', td.first.join(' | '));
+console.log('   合计:', td.foot);
+check(td.head.length === 13, '成交明细应有 13 列，实际 ' + td.head.length);
+check(['日期', '成交价', '股数', '盈亏', '收益率'].every(h => td.head.includes(h)), '缺少关键列');
+check(td.rows > 0, '成交明细应有数据行');
+check(/已实现盈亏/.test(td.foot), '合计行应含已实现盈亏');
+await page.click('#seg-td button[data-td="buy"]');
+const buyRows = await page.$$eval('#td-table tbody tr', els => els.length);
+await page.click('#seg-td button[data-td="sell"]');
+const sellRows = await page.$$eval('#td-table tbody tr', els => els.length);
+console.log(`   筛选：买入 ${buyRows} 行 / 卖出 ${sellRows} 行 / 全部 ${td.rows} 行`);
+check(buyRows + sellRows === td.rows, '买入+卖出 行数应等于全部');
+check(buyRows > 0 && sellRows > 0, '买卖都应至少有一行');
+await page.click('#seg-td button[data-td="all"]');
+await shot('05b-trades');
+await page.click('#td-csv');
+await wait(900);
+const csv = fs.readdirSync(SHOTS).filter(f => f.endsWith('.csv'));
+console.log('   导出文件:', JSON.stringify(csv));
+check(csv.length > 0, 'CSV 未导出');
+if (csv.length) {
+  const txt = fs.readFileSync(`${SHOTS}/${csv[0]}`, 'utf8');
+  const lines = txt.trim().split(/\r?\n/);
+  console.log('   CSV 行数:', lines.length, '| 表头:', lines[0].slice(0, 60));
+  check(lines.length === td.rows + 1, 'CSV 行数应为 数据行+表头');
+  check(lines[0].includes('日期') && lines[0].includes('盈亏'), 'CSV 表头不对');
+}
+await page.click('#td-close');
+check(await page.$eval('#modal-result', el => !el.classList.contains('hidden')), '关闭明细后应回到结算面板');
+
 console.log('7. 次日开盘模式：委托篮 / 撤销 / 成交');
 await page.click('#rs-again');
 await page.waitForSelector('#modal-setup:not(.hidden)');

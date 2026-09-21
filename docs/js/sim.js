@@ -342,7 +342,8 @@ export class Session {
       this.boughtToday += shares;
       this.totalFee += c.fee;
       const fill = { seq: order.id || ++this._seq, side: 'buy', label: order.label, date, price,
-                     shares, amount: c.gross, fee: c.fee, total: c.total, idx };
+                     shares, amount: c.gross, fee: c.fee, total: c.total, idx,
+                     ...this._snapAfter(price) };
       this.log.push(fill);
       this.marks.push({ idx, side: 'buy', price, seq: fill.seq });
       this.events.push({ date, type: 'buy', text: `${order.label}：买入 ${shares} 股 @ ${price.toFixed(2)}` });
@@ -368,7 +369,7 @@ export class Session {
     this.totalFee += s.fee + s.tax;
     const fill = { seq: order.id || ++this._seq, side: 'sell', label: order.label, date, price,
                    shares: sh, amount: s.gross, fee: s.fee + s.tax, total: s.net,
-                   pnl, pnlPct: cost > 0 ? pnl / cost : 0, idx };
+                   pnl, pnlPct: cost > 0 ? pnl / cost : 0, idx, ...this._snapAfter(price) };
     this.log.push(fill);
     this.marks.push({ idx, side: 'sell', price, seq: fill.seq });
     this.events.push({ date, type: 'sell',
@@ -401,27 +402,45 @@ export class Session {
     if (this.finished) return false;
     if (this.shares > 0) {
       const px = this.bars.close[this.cur];
-      const s = sellProceeds(px, this.shares, this.fees);
-      const pnl = s.net - this.costTotal;
+      const sh0 = this.shares, cost0 = this.costTotal;
+      const s = sellProceeds(px, sh0, this.fees);
+      const pnl = s.net - cost0;
       this.realized += pnl;
       if (pnl >= 0) this.wins += 1; else this.losses += 1;
       this.cash += s.net;
       this.totalFee += s.fee + s.tax;
+      this.shares = 0;
+      this.costTotal = 0;
+      // 快照要取「清仓之后」的状态，所以放在 shares 归零之后
       const fill = { seq: ++this._seq, side: 'settle', label: '结算', date: this.bars.dates[this.cur],
-                     price: px, shares: this.shares, amount: s.gross, fee: s.fee + s.tax,
-                     total: s.net, pnl, idx: this.cur };
+                     price: px, shares: sh0, amount: s.gross, fee: s.fee + s.tax,
+                     total: s.net, pnl, pnlPct: cost0 > 0 ? pnl / cost0 : 0,
+                     idx: this.cur, ...this._snapAfter(px) };
       this.log.push(fill);
       this.marks.push({ idx: this.cur, side: 'sell', price: px, seq: fill.seq, settle: true });
       this.events.push({ date: this.bars.dates[this.cur], type: 'settle',
                          text: `按收盘价 ${px.toFixed(2)} 结算清仓` });
-      this.shares = 0;
-      this.costTotal = 0;
     }
     this.finished = true;
     this.settleReason = reason;
     this.pending = [];
     this.curve.push({ idx: this.cur, equity: this.equity });
     return true;
+  }
+
+  /** 成交后立刻记账的快照（用成交价 mark，用于成交流水表的「成交后」各列） */
+  _snapAfter(price) {
+    const equity = this.cash + this.shares * price;
+    return {
+      cashAfter: this.cash,
+      sharesAfter: this.shares,
+      costAfter: this.shares > 0 ? this.costTotal / this.shares : 0,
+      equityAfter: equity,
+      returnAfter: equity / this.capital - 1,
+      realizedAfter: this.realized,
+      feeAfter: this.totalFee,
+      positionAfter: equity > 0 ? this.shares * price / equity : 0,
+    };
   }
 
   /** 结果摘要 */

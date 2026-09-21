@@ -434,6 +434,106 @@ function showResult() {
   show('#modal-result');
 }
 
+
+// ---------------------------------------------------------------- 成交明细
+let tdFilter = 'all';
+
+function openTrades() {
+  const s = state.session;
+  if (!s) return;
+  const hideName = state.mode === 'random' && !s.finished;
+  $('td-stock').textContent = hideName
+    ? '（随机模式，结算后揭晓标的）'
+    : `${s.stock.name} ${s.stock.code.toUpperCase()} · ${s.bars.dates[s.startIdx]}~${s.bars.dates[s.cur]}`;
+  renderTrades();
+  show('#modal-trades');
+}
+
+function tdRows() {
+  const s = state.session;
+  if (!s) return [];
+  return s.log.filter(t => tdFilter === 'all' ? true
+    : tdFilter === 'buy' ? t.side === 'buy' : t.side !== 'buy');
+}
+
+function renderTrades() {
+  const s = state.session;
+  if (!s) return;
+  const money2 = x => x.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const sign = x => (x >= 0 ? '+' : '') + money2(x);
+  const rows = tdRows();
+
+  const head = ['#', '日期', '操作', '成交价', '股数', '成交额', '费用', '盈亏', '盈亏%',
+                '成交后持仓', '成本价', '成交后总资产', '收益率'];
+  const body = rows.map((t, i) => {
+    const pnlCls = t.pnl == null ? '' : t.pnl >= 0 ? 'up' : 'down';
+    const retCls = cls(t.returnAfter);
+    return `<tr class="${t.side}">` +
+      `<td>${i + 1}</td>` +
+      `<td>${fmtDate(t.date)}</td>` +
+      `<td>${t.label || t.side}</td>` +
+      `<td>${t.price.toFixed(2)}</td>` +
+      `<td>${t.shares.toLocaleString('zh-CN')}</td>` +
+      `<td>${money2(t.amount)}</td>` +
+      `<td>${money2(t.fee)}</td>` +
+      `<td class="${pnlCls}">${t.pnl == null ? '—' : sign(t.pnl)}</td>` +
+      `<td class="${pnlCls}">${t.pnlPct == null ? '—' : pct(t.pnlPct)}</td>` +
+      `<td>${t.sharesAfter == null ? '—' : t.sharesAfter.toLocaleString('zh-CN')}</td>` +
+      `<td>${t.costAfter ? t.costAfter.toFixed(2) : '—'}</td>` +
+      `<td>${t.equityAfter == null ? '—' : money2(t.equityAfter)}</td>` +
+      `<td class="${retCls}">${t.returnAfter == null ? '—' : pct(t.returnAfter)}</td>` +
+      `</tr>`;
+  }).join('');
+
+  $('td-table').innerHTML =
+    `<thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${body ||
+      `<tr><td colspan="${head.length}" style="text-align:center;color:#8b9bb4;padding:18px">没有成交</td></tr>`}</tbody>`;
+
+  const buys = rows.filter(t => t.side === 'buy');
+  const sells = rows.filter(t => t.side !== 'buy');
+  const sum = (arr, f) => arr.reduce((a, t) => a + (f(t) || 0), 0);
+  $('td-count').textContent = `共 ${s.log.length} 笔，当前显示 ${rows.length} 笔`;
+  $('td-foot').innerHTML = [
+    `买入 <b>${buys.length}</b> 笔 / <b>${sum(buys, t => t.shares).toLocaleString('zh-CN')}</b> 股`,
+    `卖出 <b>${sells.length}</b> 笔 / <b>${sum(sells, t => t.shares).toLocaleString('zh-CN')}</b> 股`,
+    `成交额合计 <b>${money2(sum(s.log, t => t.amount))}</b> 元`,
+    `费用合计 <b>${money2(sum(s.log, t => t.fee))}</b> 元`,
+    `已实现盈亏 <b class="${cls(sum(sells, t => t.pnl))}">${sign(sum(sells, t => t.pnl))}</b> 元`,
+    `最终收益率 <b class="${cls(s.returnPct)}">${pct(s.returnPct)}</b>`,
+  ].map(x => `<span>${x}</span>`).join('');
+}
+
+function exportTradesCsv() {
+  const s = state.session;
+  if (!s) return;
+  const rows = tdRows();
+  const cell = v => {
+    const t = v == null ? '' : String(v);
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const head = ['序号', '日期', '方向', '操作', '成交价', '股数', '成交额', '费用', '盈亏', '盈亏%',
+                '成交后持仓', '成本价', '成交后总资产', '收益率'];
+  const lines = [head.join(',')];
+  rows.forEach((t, i) => lines.push([
+    i + 1, t.date, t.side === 'buy' ? '买入' : t.side === 'settle' ? '结算卖出' : '卖出',
+    t.label || '', t.price.toFixed(2), t.shares, t.amount.toFixed(2), t.fee.toFixed(2),
+    t.pnl == null ? '' : t.pnl.toFixed(2),
+    t.pnlPct == null ? '' : (t.pnlPct * 100).toFixed(2) + '%',
+    t.sharesAfter ?? '', t.costAfter ? t.costAfter.toFixed(2) : '',
+    t.equityAfter == null ? '' : t.equityAfter.toFixed(2),
+    t.returnAfter == null ? '' : (t.returnAfter * 100).toFixed(2) + '%',
+  ].map(cell).join(',')));
+  // "﻿" 让 Excel 正确识别 UTF-8 中文
+  const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `kline-${s.stock.code}-${s.bars.dates[s.startIdx]}-${s.bars.dates[s.cur]}.csv`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  toast(`已导出 ${rows.length} 笔成交`, 'info', 1800);
+}
+
 // ---------------------------------------------------------------- 设置界面
 function updateFillHint() {
   $('fill-hint').innerHTML = FILL_HINT[state.fillMode];
@@ -519,6 +619,16 @@ function bind() {
 
   $('rs-again').addEventListener('click', () => { hide('#modal-result'); show('#modal-setup'); updatePoolHint(); });
   $('rs-view').addEventListener('click', () => hide('#modal-result'));
+  $('rs-trades').addEventListener('click', openTrades);
+  $('btn-all-trades').addEventListener('click', openTrades);
+  $('td-close').addEventListener('click', () => hide('#modal-trades'));
+  $('td-csv').addEventListener('click', exportTradesCsv);
+  $('modal-trades').addEventListener('click', e => { if (e.target.id === 'modal-trades') hide('#modal-trades'); });
+  document.querySelectorAll('#seg-td button').forEach(b => b.addEventListener('click', () => {
+    tdFilter = b.dataset.td;
+    document.querySelectorAll('#seg-td button').forEach(x => x.classList.toggle('on', x === b));
+    renderTrades();
+  }));
 
   $('chk-ma').addEventListener('change', e => state.chart.setShowMA(e.target.checked));
   $('btn-zoom-in').addEventListener('click', () => zoomBy(0.8));

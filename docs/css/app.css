@@ -180,6 +180,8 @@ b { font-variant-numeric: tabular-nums; }
   padding: 20px 22px; box-shadow: 0 24px 60px rgba(0,0,0,.55);
 }
 .dialog.small { max-width: 430px; }
+.dialog.wide { max-width: 900px; }
+.hint.inline { display: inline; }
 .dialog h2 { margin: 0 0 14px; font-size: 17px; }
 .field { margin-bottom: 14px; }
 .field.two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -235,6 +237,36 @@ input[type=text]:focus, input[type=number]:focus { border-color: var(--accent); 
 .up { color: var(--up); }
 .down { color: var(--down); }
 .flat { color: var(--muted); }
+
+/* ---------------- 成交明细 ---------------- */
+.mini.right { margin-left: auto; width: auto; padding: 0 8px; font-size: 11px; height: 22px; }
+.td-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.td-bar .hint { margin-left: auto; }
+.seg.thin button { flex: 0 0 auto; padding: 5px 11px; font-size: 12px; }
+.td-wrap {
+  max-height: 54vh; overflow: auto;
+  border: 1px solid var(--line); border-radius: 9px; background: #0d1626;
+}
+.td-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.td-table th {
+  position: sticky; top: 0; z-index: 1;
+  background: #16223a; color: var(--muted); font-weight: 500;
+  text-align: right; padding: 7px 9px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.td-table td {
+  padding: 6px 9px; text-align: right; white-space: nowrap;
+  border-bottom: 1px solid rgba(148,163,184,.09);
+}
+.td-table th:nth-child(-n+3), .td-table td:nth-child(-n+3) { text-align: left; }
+.td-table tbody tr:hover td { background: rgba(148,163,184,.07); }
+.td-table tr.buy td:nth-child(3) { color: var(--up); }
+.td-table tr.sell td:nth-child(3), .td-table tr.settle td:nth-child(3) { color: var(--down); }
+.td-table tr.settle td { background: rgba(251,191,36,.05); }
+.td-foot {
+  margin-top: 11px; display: flex; flex-wrap: wrap; gap: 8px 18px;
+  font-size: 12px; color: var(--muted);
+}
+.td-foot b { color: var(--text); }
 
 /* ---------------- 提示 ---------------- */
 #toast {

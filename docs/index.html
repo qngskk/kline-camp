@@ -99,7 +99,7 @@
     </div>
 
     <div class="card grow">
-      <h3>成交流水</h3>
+      <h3>成交流水 <button class="mini right" id="btn-all-trades">全部明细</button></h3>
       <div id="log-list" class="log-list"><div class="empty">还没有成交</div></div>
     </div>
   </aside>
@@ -212,8 +212,29 @@
     <div class="hint" id="rs-note"></div>
     <div class="dialog-actions">
       <button class="ghost" id="rs-view">查看 K 线</button>
+      <button class="ghost" id="rs-trades">全部成交明细</button>
       <button class="primary" id="rs-again">再来一局</button>
     </div>
+  </div>
+</div>
+
+<!-- 成交明细 -->
+<div class="modal hidden" id="modal-trades">
+  <div class="dialog wide">
+    <h2>成交明细 <span class="sub" id="td-stock"></span></h2>
+    <div class="td-bar">
+      <div class="seg thin" id="seg-td">
+        <button data-td="all" class="on">全部</button>
+        <button data-td="buy">只看买入</button>
+        <button data-td="sell">只看卖出</button>
+      </div>
+      <span class="spacer"></span>
+      <span class="hint" id="td-count"></span>
+      <button class="ghost" id="td-csv">导出 CSV</button>
+    </div>
+    <div class="td-wrap"><table class="td-table" id="td-table"></table></div>
+    <div class="td-foot" id="td-foot"></div>
+    <div class="dialog-actions"><button class="primary" id="td-close">关闭</button></div>
   </div>
 </div>
 

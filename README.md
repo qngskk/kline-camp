@@ -9,9 +9,10 @@
 ![训练界面](docs/assets/session.png)
 
 <p align="center">
-  <img src="docs/assets/setup.png" width="32%" alt="开局设置">
-  <img src="docs/assets/pending.png" width="32%" alt="今日委托篮">
-  <img src="docs/assets/result.png" width="32%" alt="结算面板">
+  <img src="docs/assets/setup.png" width="24%" alt="开局设置">
+  <img src="docs/assets/pending.png" width="24%" alt="今日委托篮">
+  <img src="docs/assets/result.png" width="24%" alt="结算面板">
+  <img src="docs/assets/trades.png" width="24%" alt="成交明细">
 </p>
 
 ---
@@ -29,6 +30,9 @@
    定好仓位后点 `进入下一日` 揭示下一根 K 线。图上会留下 `B` / `S` 标记与成本线。
 4. **结束**：点`结束交易并结算`或走满窗口自动结算，
    结算面板用大号数字突出**最终收益率**，并给出胜率、最大回撤与两个对比基准。
+5. **复盘**：结算后点 `全部成交明细`（侧栏「成交流水」右上角也有入口），
+   逐笔查看每次买卖的**日期 / 操作 / 成交价 / 股数 / 成交额 / 费用 / 盈亏 / 盈亏% /
+   成交后持仓 / 成本价 / 成交后总资产 / 收益率**，可按买入/卖出筛选，并一键 `导出 CSV`（Excel 直接打开）。
 
 ### 结算面板里的对比基准是什么
 
@@ -84,7 +88,7 @@ kline-camp/
 │   ├── index.html            页面骨架
 │   ├── css/app.css           深色主题（红涨绿跌）
 │   ├── js/decode.js          KLC1 二进制行情解码
-│   ├── js/sim.js             训练仿真引擎（下单/推进分离、双成交口径、加减仓、T+1）
+│   ├── js/sim.js             训练仿真引擎（下单/推进分离、双成交口径、加减仓、T+1、成交快照）
 │   ├── js/chart.js           Canvas K线 + 成交量 + 标记 + 十字光标
 │   ├── js/app.js             主控制器（设置 / 下单 / 结算 / 渲染）
 │   └── data/                 构建产物：{code}.bin × 4997 + index.json + manifest.json
@@ -94,7 +98,10 @@ kline-camp/
 │   └── universe.py           板块 / 资产类别判定
 ├── tools/build_data.py       构建 docs/data（读本地日线 → 前复权 → 量化打包）
 ├── tools/dump_fixture.py     导出对照样本，供前端解码器回归测试
-├── tests/                    Node 单元测试（解码 + 仿真账目）
+├── tools/verify_data.py      价格链路独立审计（自己解析 .day、自己算复权因子）
+├── tools/verify_sim.py       股数/资金/收益率对账（Python 独立重放前端流水）
+├── tools/gen_transcript.mjs  导出前端引擎的交易流水，供上面的对账使用
+├── tests/                    Node 单元/集成测试 + 浏览器端到端
 └── data/cache/               复权因子 npz 缓存（已 gitignore，可重建）
 ```
 

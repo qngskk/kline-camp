@@ -420,6 +420,36 @@ test('长程随机操作（两种口径各 30 局）：现金不为负、账目�
   }
 });
 
+test('成交流水带成交后快照，且与账目自洽', () => {
+  for (const mode of ['close', 'open']) {
+    const bars = makeBars();
+    const s = newSession(bars, { fees: true, fillMode: mode });
+    s.order('add', 0.5); s.nextDay();
+    s.order('add', 0.25); s.order('reduce', 0.5); s.nextDay();
+    while (!s.finished) s.nextDay();
+
+    assert.ok(s.log.length >= 4, '应有若干笔成交');
+    for (const t of s.log) {
+      for (const k of ['cashAfter', 'sharesAfter', 'costAfter', 'equityAfter', 'returnAfter',
+                       'realizedAfter', 'feeAfter', 'positionAfter']) {
+        assert.ok(t[k] != null && Number.isFinite(t[k]), `${mode} ${t.label} 缺字段 ${k}`);
+      }
+      // 快照内部自洽：总资产 = 现金 + 持仓 × 成交价
+      assert.ok(Math.abs(t.equityAfter - (t.cashAfter + t.sharesAfter * t.price)) < 1e-6,
+        `${t.label} 快照不自洽`);
+      assert.ok(Math.abs(t.returnAfter - (t.equityAfter / s.capital - 1)) < 1e-12);
+      assert.ok(t.shares % LOT_SIZE === 0, '成交股数应为整手');
+      if (t.side === 'buy') assert.equal(t.pnl, undefined, '买入没有已实现盈亏');
+      else assert.ok(Number.isFinite(t.pnl), '卖出/结算应有盈亏');
+    }
+    const last = s.log[s.log.length - 1];
+    assert.equal(last.sharesAfter, 0, '结算后持仓应归零');
+    assert.ok(Math.abs(last.equityAfter - s.summary().finalEquity) < 1e-6, '末笔总资产应等于最终总资产');
+    assert.ok(Math.abs(last.returnAfter - s.returnPct) < 1e-12, '末笔收益率应等于最终收益率');
+    assert.ok(Math.abs(last.feeAfter - s.totalFee) < 1e-9, '末笔累计费用应等于总费用');
+  }
+});
+
 test('费用会真实侵蚀收益', () => {
   const bars = makeBars();
   const a = closeSession(bars, { fees: false });
