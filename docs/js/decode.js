@@ -48,11 +48,16 @@ export function decodeKLC(buffer) {
   const lOff = hOff + 2 * n;
   const cOff = lOff + 2 * n;
   const vOff = cOff + 2 * n;
+  // 价格统一取整到「分」：A 股真实报价就是 0.01 一跳，
+  // 这样「成交价 × 股数 = 成交额」「成本价」「成交后总资产」全部能用计算器验算，
+  // 也避免出现 35.0797 这种显示 35.08、却按 35.0797 计账的割裂。
+  // 取整是单调的，不会破坏 high >= max(open, close) 这类关系。
+  const r2 = x => Math.round(x * 100) / 100;
   for (let i = 0; i < n; i++) {
-    open[i] = pmin + dv.getUint16(oOff + i * 2, true) * pstep;
-    high[i] = pmin + dv.getUint16(hOff + i * 2, true) * pstep;
-    low[i] = pmin + dv.getUint16(lOff + i * 2, true) * pstep;
-    close[i] = pmin + dv.getUint16(cOff + i * 2, true) * pstep;
+    open[i] = r2(pmin + dv.getUint16(oOff + i * 2, true) * pstep);
+    high[i] = r2(pmin + dv.getUint16(hOff + i * 2, true) * pstep);
+    low[i] = r2(pmin + dv.getUint16(lOff + i * 2, true) * pstep);
+    close[i] = r2(pmin + dv.getUint16(cOff + i * 2, true) * pstep);
     vol[i] = Math.exp(vmin + dv.getUint16(vOff + i * 2, true) * vstep);
   }
   return { n, dates, open, high, low, close, vol };

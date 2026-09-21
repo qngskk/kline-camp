@@ -128,6 +128,9 @@ def main(n_sample=300):
 
         blob = open(os.path.join(DATA, code[2:] + ".bin"), "rb").read()
         d = decode_pack(blob)
+        # 前端 decode.js 会把价格取整到「分」（A 股报价粒度），这里按同样口径比对
+        for f in ("open", "high", "low", "close"):
+            d[f] = np.round(d[f], 2)
         n = d["dates"].size
 
         # 只保留落在发布窗口内的那段做比对
@@ -213,9 +216,10 @@ def main(n_sample=300):
     unit_ratio = np.array(unit_ratio) if unit_ratio else np.array([1.0])
 
     print(f"审计样本：{len(pick)} 只股票 / {bars_total:,} 根 bar（窗口 {win[0]}~{win[1]}）\n")
-    print("【1】价格重建误差（量化 uint16 后 vs 原始前复权价）")
+    print("【1】价格重建误差（uint16 量化 + 前端取整到分 vs 原始前复权价）")
     print(f"    单只股票内的最大误差：中位 {np.median(err):.5f} 元，90 分位 {np.percentile(err,90):.5f} 元，最大 {err.max():.5f} 元")
     print(f"    折算成收益率误差：中位 {np.median(ret_err)*100:.5f}%，最大 {ret_err.max()*100:.4f}%")
+    print(f"    （其中「取整到分」本身最多贡献 0.005 元，是为了让成交价 × 股数 = 成交额 可验算）")
     print(f"    最差样本：{worst[0][1]} {worst[0][2]} {worst[0][3]} 真实 {worst[0][4]:.4f} → 页面 {worst[0][5]:.4f}")
 
     print("\n【2】日期序列")

@@ -231,6 +231,8 @@ class Replay:
 def verify_one(tag, transcript_path, bin_path):
     T = json.load(open(transcript_path, encoding="utf-8"))
     bars = decode_pack(open(bin_path, "rb").read())
+    for f in ("open", "high", "low", "close"):     # 与前端 decode.js 一致：价格取整到分
+        bars[f] = np.round(bars[f], 2)
     r = Replay(bars, T["startIdx"], T["horizon"], T["fillMode"], T["capital"], T.get("boardIdx", 0))
     r.start_last = min(T["startIdx"] + T["horizon"], bars["dates"].size - 1)
 

@@ -26,7 +26,8 @@ for (const code of CASES) {
     for (let i = 0; i < bars.n; i++) {
       assert.equal(bars.dates[i], fx.dates[i], `dates[${i}]`);
       for (const f of ['open', 'high', 'low', 'close']) {
-        assert.ok(Math.abs(bars[f][i] - fx[f][i]) < 2e-4,
+        // 客户端把价格取整到「分」（A 股报价粒度），所以容差放到半分
+        assert.ok(Math.abs(bars[f][i] - fx[f][i]) < 6e-3,
           `${f}[${i}] ${bars[f][i]} vs ${fx[f][i]}`);
       }
       assert.ok(Math.abs(bars.vol[i] - fx.vol[i]) <= Math.max(1, fx.vol[i] * 1e-5),
