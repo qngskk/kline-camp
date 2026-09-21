@@ -297,6 +297,33 @@ if (csv.length) {
 await page.click('#td-close');
 check(await page.$eval('#modal-result', el => !el.classList.contains('hidden')), '关闭明细后应回到结算面板');
 
+console.log('6b. 兜底：DOM 缺元素（版本错配）时结算面板仍要弹出');
+await page.click('#rs-view');
+await page.evaluate(() => document.getElementById('rs-bench').remove());
+await page.click('#btn-restart');
+await page.waitForSelector('#modal-setup:not(.hidden)');
+await startSession();
+await clickAdd('0.5'); await wait(150);
+await page.click('#btn-next'); await wait(450);
+await page.click('#btn-end');
+await page.waitForSelector('#modal-confirm:not(.hidden)');
+await page.click('#cf-ok');
+await wait(1200);
+const resilient = await page.evaluate(() => ({
+  shown: !document.getElementById('modal-result').classList.contains('hidden'),
+  ret: document.getElementById('rs-return').textContent,
+  toast: document.getElementById('toast') ? document.getElementById('toast').textContent : '',
+}));
+console.log('   ', JSON.stringify({ shown: resilient.shown, ret: resilient.ret }));
+check(resilient.shown, '缺少 DOM 元素时结算面板仍应弹出（否则缓存错配会让用户"什么都没看到"）');
+check(/渲染出错/.test(resilient.toast), '应给出渲染出错提示并引导强制刷新');
+// 还原元素，后续步骤继续用完整面板
+await page.evaluate(() => {
+  const d = document.createElement('div');
+  d.id = 'rs-bench'; d.className = 'bench';
+  document.querySelector('#modal-result .dialog').appendChild(d);
+});
+
 console.log('7. 次日开盘模式：委托篮 / 撤销 / 成交');
 await page.click('#rs-again');
 await page.waitForSelector('#modal-setup:not(.hidden)');

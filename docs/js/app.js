@@ -382,7 +382,19 @@ function doEnd() {
 // ---------------------------------------------------------------- 结算
 function showResult() {
   const s = state.session;
+  if (!s) return;
   const r = s.summary();
+  // 先把面板弹出来：后面任何一格渲染出错都不该让"什么都没发生"
+  show('#modal-result');
+  try {
+    fillResult(s, r);
+  } catch (e) {
+    toast('结算面板渲染出错：' + (e && e.message ? e.message : e) +
+          '（若刚更新过版本，请按 Ctrl+F5 强制刷新）', 'warn', 8000);
+  }
+}
+
+function fillResult(s, r) {
   $('rs-stock').innerHTML = `<b>${r.name}</b> ${r.code.toUpperCase()} · ${r.board}`;
   const el = $('rs-return');
   el.textContent = pct(r.returnPct);
@@ -434,7 +446,6 @@ function showResult() {
     (gap < 0 ? '次日低开，所以「满仓持有」的起点更低、涨幅更大。' : '次日高开，所以「满仓持有」的起点更高、涨幅更小。') +
     `</div>`);
   refreshStockLabel();
-  show('#modal-result');
 }
 
 
@@ -691,6 +702,14 @@ function zoomBy(k) {
 
 // ---------------------------------------------------------------- 启动
 async function init() {
+  // 全局兜底：静态站没有构建流程，页面与脚本版本错配（缓存）时不要让功能静默失效
+  window.addEventListener('error', e => {
+    try { toast('页面出错：' + (e.message || '未知错误') + '（若刚更新过版本，请按 Ctrl+F5 强制刷新）', 'warn', 8000); } catch (_) {}
+  });
+  window.addEventListener('unhandledrejection', e => {
+    try { toast('异步出错：' + ((e.reason && e.reason.message) || e.reason), 'warn', 8000); } catch (_) {}
+  });
+
   state.chart = new KChart($('chart'));
   window.__kline = state;        // 调试/自动化测试钩子：__kline.chart / __kline.session
   bind();

@@ -151,6 +151,17 @@ CHROME_PATH=<chrome-headless-shell 路径> node tests/e2e/browser.mjs
 它会真的点开页面、抽股票、同日连续加仓、验证 T+1 拦截、切换成交口径、撤销委托、结算，
 并检查画布上确实画出了红绿 K 线与买卖标记。
 
+### 关于缓存与版本号
+
+纯静态站没有构建流程，`index.html` 和 `js/*.js` 可能被浏览器 / GitHub Pages CDN 缓存到**不同版本**
+（新的 `app.js` 去操作旧的 `index.html` 里不存在的元素 → 抛异常）。为此做了三层防护：
+
+1. `index.html` 里的 `css/app.css?v=` / `js/app.js?v=` 带版本号，**改动前端文件后把版本号 +1**；
+2. 结算面板改成**先弹出来再填内容**，任何一格渲染失败都不会让"什么都没发生"；
+3. 全局 `error` / `unhandledrejection` 兜底，出错时弹提示并引导 `Ctrl+F5` 强制刷新。
+
+自动化测试里有一节专门校验第 2 条：人为删掉 `#rs-bench` 后跑完整局，结算面板仍须出现。
+
 ---
 
 
