@@ -397,9 +397,6 @@ function showResult() {
     ['平仓次数', `${r.closes} 次（${r.wins} 胜 ${r.losses} 负）`],
     ['胜率', r.winRate == null ? '—' : (r.winRate * 100).toFixed(0) + '%'],
     ['最大回撤', dd(r.maxDrawdown)],
-    ['本股区间涨跌 收→收', dd(r.benchmarkPct)],
-    ['满仓持有 次开→收', dd(r.buyHoldPct)],
-    ['跑赢满仓持有', dd(r.returnPct - r.buyHoldPct)],
     ['已实现盈亏', `${r.realized >= 0 ? '+' : ''}${money(r.realized)} 元`],
     ['交易费用', money(r.totalFee) + ' 元'],
     ['成交口径', r.fillModeLabel],
@@ -409,14 +406,33 @@ function showResult() {
   $('rs-stats').innerHTML = rows.map(([k, v]) =>
     `<div><label>${k}</label><b class="${k.startsWith('本股区间') ? cls(r.benchmarkPct) : k === '满仓持有 次开→收' ? cls(r.buyHoldPct) : k === '跑赢满仓持有' ? cls(r.returnPct - r.buyHoldPct) : ''}">${v}</b></div>`).join('');
 
-  // 把两个基准的起算点写出来，避免“同期个股”被误读成指数
+  // 对比基准单独一块渲染：把「买在哪、卖在哪」的价格与日期直接写出来，
+  // 避免「同期个股」「收→收」这类缩写被误读成指数或看不懂
   const c0 = s.bars.close[s.startIdx], o1 = s.bars.open[Math.min(s.startIdx + 1, s.bars.n - 1)];
   const c1 = s.price;
-  $('rs-note').innerHTML =
-    `对比基准都是<b>你训练的这只股票本身</b>（前复权、含分红），不是指数。<br>` +
-    `本股区间涨跌：随机日 ${fmtDate(r.startDate)} 收盘 <b>${c0.toFixed(2)}</b> → 末日 ${fmtDate(r.endDate)} 收盘 <b>${c1.toFixed(2)}</b>；<br>` +
-    `满仓持有：次日开盘 <b>${o1.toFixed(2)}</b>（你最早能买到的价格）→ 末日收盘 <b>${c1.toFixed(2)}</b>，` +
-    `两者相差 ${o1 >= c0 ? '+' : ''}${((o1 / c0 - 1) * 100).toFixed(2)}% 的隔夜跳空。`;
+  const gap = o1 / c0 - 1;
+  const brow = (name, how, pctVal, cls2, note) =>
+    `<div class="bench-row">` +
+      `<span class="bn">${name}</span>` +
+      `<span class="bf">${how}</span>` +
+      `<b class="bv ${cls2}">${dd(pctVal)}</b>` +
+      (note ? `<span class="bt">${note}</span>` : '') +
+    `</div>`;
+  $('rs-bench').innerHTML =
+    `<div class="bench-cap">对比基准 —— 都是<b>你训练的这一只股票</b>（前复权、含分红），不是指数</div>` +
+    brow('本股区间涨跌',
+         `随机日 ${fmtDate(r.startDate)} 收盘 <b>${c0.toFixed(2)}</b> → 末日 ${fmtDate(r.endDate)} 收盘 <b>${c1.toFixed(2)}</b>`,
+         r.benchmarkPct, cls(r.benchmarkPct), '这段行情本身涨了多少（中性参照，与你的操作无关）') +
+    brow('满仓持有',
+         `随机日<b>次日开盘</b> <b>${o1.toFixed(2)}</b>（你最早能买到的价格）→ 末日收盘 <b>${c1.toFixed(2)}</b>`,
+         r.buyHoldPct, cls(r.buyHoldPct), '若在最早能买到的价格满仓买入并一直拿到最后一天') +
+    brow('跑赢满仓持有', `你的收益率 ${pct(r.returnPct)} − 满仓持有 ${dd(r.buyHoldPct)}`,
+         r.returnPct - r.buyHoldPct, cls(r.returnPct - r.buyHoldPct), '');
+  $('rs-bench').insertAdjacentHTML('beforeend',
+    `<div class="bench-foot">两者相差 ${gap >= 0 ? '+' : ''}${(gap * 100).toFixed(2)}% —— ` +
+    `这是随机日收盘 → 次日开盘的<b>隔夜跳空</b>；` +
+    (gap < 0 ? '次日低开，所以「满仓持有」的起点更低、涨幅更大。' : '次日高开，所以「满仓持有」的起点更高、涨幅更小。') +
+    `</div>`);
   refreshStockLabel();
   show('#modal-result');
 }

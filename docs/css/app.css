@@ -241,6 +241,24 @@ input[type=text]:focus, input[type=number]:focus { border-color: var(--accent); 
 .stat-grid label { color: var(--muted); }
 .stat-grid b { font-variant-numeric: tabular-nums; }
 
+.bench {
+  margin-top: 14px; padding-top: 11px; border-top: 1px dashed var(--line);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.bench-cap { font-size: 11px; color: var(--muted); }
+.bench-cap b { color: #cbd5e1; }
+.bench-row {
+  display: grid; grid-template-columns: 84px 1fr auto; gap: 4px 10px;
+  align-items: baseline; font-size: 12px;
+}
+.bench-row .bn { color: var(--text); font-weight: 600; }
+.bench-row .bf { color: var(--muted); font-variant-numeric: tabular-nums; }
+.bench-row .bf b { color: #cbd5e1; }
+.bench-row .bv { font-size: 15px; font-variant-numeric: tabular-nums; }
+.bench-row .bt { grid-column: 2 / 4; font-size: 11px; color: #64748b; margin-top: -2px; }
+.bench-foot { font-size: 11px; color: var(--muted); line-height: 1.6; }
+.bench-foot b { color: #cbd5e1; }
+
 .up { color: var(--up); }
 .down { color: var(--down); }
 .flat { color: var(--muted); }
