@@ -193,6 +193,8 @@
       <li>成交价触及涨停买不进、触及跌停卖不出（主板 ±10%，创业板/科创板 ±20%）。</li>
       <li>操作满 30 / 60 / 90 个交易日后自动结算，剩余持仓按最后一日收盘价折算。</li>
       <li>「结束交易」：尾盘模式按当收即时清仓；次日开盘价模式放弃今日委托、按次日开盘价清仓。</li>
+      <li>结算时的对比基准是<b>你训练的这一只股票本身</b>（不是指数）：
+        「本股区间涨跌」= 随机日收盘 → 末日收盘；「满仓持有」= 次日开盘（你最早能买到的价格）→ 末日收盘。</li>
       <li>已剔除现行 ST 股、上市不足 250 个交易日的次新股、北交所与 B 股。</li>
     </ol>
     <div class="dialog-actions"><button class="primary" id="help-ok">知道了</button></div>
@@ -207,6 +209,7 @@
     <div class="big-return" id="rs-return">—</div>
     <div class="big-sub" id="rs-sub">—</div>
     <div class="stat-grid" id="rs-stats"></div>
+    <div class="hint" id="rs-note"></div>
     <div class="dialog-actions">
       <button class="ghost" id="rs-view">查看 K 线</button>
       <button class="primary" id="rs-again">再来一局</button>

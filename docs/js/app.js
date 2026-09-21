@@ -410,8 +410,8 @@ function showResult() {
     ['平仓次数', `${r.closes} 次（${r.wins} 胜 ${r.losses} 负）`],
     ['胜率', r.winRate == null ? '—' : (r.winRate * 100).toFixed(0) + '%'],
     ['最大回撤', dd(r.maxDrawdown)],
-    ['同期个股涨跌', dd(r.benchmarkPct)],
-    ['满仓持有收益', dd(r.buyHoldPct)],
+    ['本股区间涨跌 收→收', dd(r.benchmarkPct)],
+    ['满仓持有 次开→收', dd(r.buyHoldPct)],
     ['跑赢满仓持有', dd(r.returnPct - r.buyHoldPct)],
     ['已实现盈亏', `${r.realized >= 0 ? '+' : ''}${money(r.realized)} 元`],
     ['交易费用', money(r.totalFee) + ' 元'],
@@ -420,7 +420,16 @@ function showResult() {
     ['剩余持仓', r.holding ? '有（已折算）' : '无'],
   ];
   $('rs-stats').innerHTML = rows.map(([k, v]) =>
-    `<div><label>${k}</label><b class="${k === '同期个股涨跌' ? cls(r.benchmarkPct) : k === '满仓持有收益' || k === '跑赢满仓持有' ? cls(r.buyHoldPct - r.returnPct > 0 ? -1 : 1) : ''}">${v}</b></div>`).join('');
+    `<div><label>${k}</label><b class="${k.startsWith('本股区间') ? cls(r.benchmarkPct) : k === '满仓持有 次开→收' ? cls(r.buyHoldPct) : k === '跑赢满仓持有' ? cls(r.returnPct - r.buyHoldPct) : ''}">${v}</b></div>`).join('');
+
+  // 把两个基准的起算点写出来，避免“同期个股”被误读成指数
+  const c0 = s.bars.close[s.startIdx], o1 = s.bars.open[Math.min(s.startIdx + 1, s.bars.n - 1)];
+  const c1 = s.price;
+  $('rs-note').innerHTML =
+    `对比基准都是<b>你训练的这只股票本身</b>（前复权、含分红），不是指数。<br>` +
+    `本股区间涨跌：随机日 ${fmtDate(r.startDate)} 收盘 <b>${c0.toFixed(2)}</b> → 末日 ${fmtDate(r.endDate)} 收盘 <b>${c1.toFixed(2)}</b>；<br>` +
+    `满仓持有：次日开盘 <b>${o1.toFixed(2)}</b>（你最早能买到的价格）→ 末日收盘 <b>${c1.toFixed(2)}</b>，` +
+    `两者相差 ${o1 >= c0 ? '+' : ''}${((o1 / c0 - 1) * 100).toFixed(2)}% 的隔夜跳空。`;
   refreshStockLabel();
   show('#modal-result');
 }
