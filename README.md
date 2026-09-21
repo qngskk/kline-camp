@@ -4,7 +4,7 @@
 你只能看到已经"发生"的 K 线，**同一天可以反复加仓 / 减仓把仓位调到想要的位置**，30 / 60 / 90 个交易日后结算，
 最终收益率一键揭晓。
 
-纯静态站点，无后端、无第三方依赖，直接托管在 GitHub Pages 上即可。
+
 
 ![训练界面](docs/assets/session.png)
 
@@ -82,61 +82,8 @@ kline-camp/
 
 ---
 
-## 三、数据构建
 
-数据源为本地通达信安装目录（默认 `/mnt/g/new_tdx`，可用环境变量覆盖）：
-
-| 用途 | 路径 |
-|---|---|
-| 日线 | `vipdoc/{sh,sz,bj}/lday/*.day`（32 字节/条） |
-| 权息 | `T0002/hq_cache/gbbq` |
-| 名称 | `T0002/hq_cache/infoharbor_ex.code` |
-
-```bash
-# 依赖：numpy + pytdx（本仓库使用 workspace 根虚拟环境 .venv_tdx）
-python tools/build_data.py            # 全量构建，约 70 秒，产出 docs/data/
-python tools/build_data.py --limit 50 # 只构建前 50 只（调试）
-python tools/dump_fixture.py 600000   # 导出解码对照样本
-```
-
-构建脚本内置自检：每只股票打包后立刻用独立解码器还原，与源数据逐根比对。
-本次构建结果见 `docs/data/manifest.json`：
-
-```
-股票 4997 只 / 2,453,350 根 bar / 29.6 MB
-价格重建最大误差 0.0146 元，成交量重建最大相对误差 7.8e-05
-```
-
-### 二进制格式 KLC1（全部小端，32 + 12n 字节）
-
-| 偏移 | 类型 | 含义 |
-|---|---|---|
-| 0 | 4s | magic `KLC1` |
-| 4 | u32 | bar 数 n |
-| 8 | u32 | 首根日期 `YYYYMMDD` |
-| 12 / 16 | f32 | 价格量化下界 `pmin` / 步长 `pstep` |
-| 20 / 24 | f32 | 成交量量化下界 `vmin` / 步长 `vstep`（对数空间） |
-| 28 | u32 | 保留 |
-| 32 | u16 × n | `gap`：与上一根 bar 的自然日间隔（首根为 0） |
-| … | u16 × n | `open` / `high` / `low` / `close` 量化价 |
-| … | u16 × n | `vol` 量化量 |
-
-- `date[i] = date0 + Σ gap[0..i]`（自然日，可还原真实交易日与停牌缺口）
-- `price = pmin + q × pstep`，`vol = exp(vmin + q × vstep)`（单位：股）
-
-单只股票约 **6 KB**。页面首次加载只取 `index.json`（226 KB，GitHub Pages 会 gzip），
-每开一局再按需下载**一只**股票的 bin，30 天窗口下整局流量 < 250 KB。
-
-### 为什么不做全历史
-
-全市场全历史（1990 起）打包约 217 MB。本训练营按你的要求把窗口定在
-**2024-09-02 ~ 2026-09-18**（与本地 5 分钟线覆盖区间对齐），体积降到 29.6 MB，
-且随机日期区间覆盖 2024-12-02 ~ 2026-09-01，样本池仍有 **198 万个「股票+日期」组合**。
-如需更长历史，改 `tools/build_data.py` 顶部的 `WINDOW_FROM/RANDOM_FROM` 重跑即可。
-
----
-
-## 四、本地预览 / 测试
+## 三、本地预览 / 测试
 
 ```bash
 # 预览（必须走 HTTP，fetch 不支持 file://）
@@ -167,26 +114,9 @@ CHROME_PATH=<chrome-headless-shell 路径> node tests/e2e/browser.mjs
 
 ---
 
-## 五、部署到 GitHub Pages
 
-```bash
-cd kline-camp
-git add -A
-git commit -m "feat: 重生之K线股王 K线训练营"
-git remote add origin git@github.com:<你的用户名>/kline-camp.git
-git push -u origin main
-```
 
-然后在仓库页面：**Settings → Pages → Build and deployment**
-- Source: `Deploy from a branch`
-- Branch: `main`，目录选 **`/docs`**
-- 稍等 1~2 分钟，访问 `https://<你的用户名>.github.io/kline-camp/`
-
-> `docs/.nojekyll` 已就位，避免 Jekyll 处理 `data/` 下的大量二进制文件。
-
----
-
-## 六、已知口径与偏差（务必知悉）
+## 四、已知口径与偏差（务必知悉）
 
 1. **前复权基于「当前」权息表**：`prices(t) = 原始价(t) × Π_{除权日 > t} 因子`，最新价不变、历史价等比缩放。
    绝对价位与当年真实盘面不同，但**涨跌幅与形态完全一致**，不影响训练。
@@ -202,7 +132,7 @@ git push -u origin main
 
 ---
 
-## 七、许可与致谢
+## 五、许可与致谢
 
 - 数据层 `src/tdx.py`、`src/adj.py`、`src/universe.py` 复用自本 workspace 的 `stockpick` 项目工程实现。
 - 行情数据来自用户本地通达信安装目录，仅供个人研究学习使用。
