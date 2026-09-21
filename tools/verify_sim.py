@@ -104,10 +104,15 @@ class Replay:
         if self.finished or self.days >= self.horizon or self.cur >= self.start_last:
             return None
         if kind in ("add", "full"):
+            est = (float(self.b["close"][self.cur]) if self.mode == "close"
+                   else round(float(self.b["close"][self.cur]) * 0.9, 2))
+            queued_sell = sum(o["shares"] for o in self.pending if o["side"] == "sell")
+            if self.cash + queued_sell * est < est * LOT * (1 + COMM + TRANSFER):
+                return None                      # 入篮前买不起一手，直接拒绝
             full = kind == "full" or frac >= 0.999999
             budget = None if full else max(0.0, self.equity * frac)
             return {"side": "buy", "kind": "full" if full else "add", "budget": budget,
-                    "shares": None, "label": "满仓" if full else "加"}
+                    "shares": None, "label": "满仓" if full else "加", "fraction": frac}
         base = self.sellable - sum(o["shares"] for o in self.pending if o["side"] == "sell")
         if self.shares <= 0 or base <= 0:
             return None
@@ -115,18 +120,16 @@ class Replay:
         sh = base if clear else lot_floor(base * frac)
         if sh <= 0:
             return None
+        # 只是入篮前的预估，真正卖多少在成交时按实时可卖重算
         return {"side": "sell", "kind": "clear" if clear else "reduce", "shares": sh,
-                "budget": None, "label": "清仓" if clear else "减"}
+                "budget": None, "label": "清仓" if clear else "减", "fraction": frac}
 
     def order(self, kind, frac):
         o = self.plan(kind, frac)
         if o is None:
             return {"ok": False}
-        if self.mode == "open":
-            self.pending.append(o)
-            return {"ok": True, "queued": True, "order": o}
-        f = self._fill(o, self.price, self.cur)
-        return {"ok": f is not None, "fill": f, "order": o}
+        self.pending.append(o)
+        return {"ok": True, "queued": True, "order": o}
 
     def cancel(self):
         if self.pending:
@@ -169,9 +172,11 @@ class Replay:
         # 卖出
         if price <= self.limit_down(idx) + 0.005:
             return None
-        if self.shares <= 0:
+        base = max(0, self.shares - self.bought_today)
+        if base <= 0:
             return None
-        sh = min(o["shares"], self.shares)
+        sh = base if o["kind"] == "clear" else lot_floor(base * o["fraction"])
+        sh = min(sh, base)
         if sh <= 0:
             return None
         gross = price * sh
@@ -187,19 +192,21 @@ class Replay:
         self.n_sells += 1
         return {"side": "sell", "price": price, "shares": sh, "gross": gross, "fee": fee, "pnl": pnl}
 
+    def _run_batch(self, price, idx):
+        for o in self.pending:               # 严格按输入顺序
+            self._fill(o, price, idx)
+        self.pending = []
+
     def next_day(self):
         if self.finished or self.days >= self.horizon or self.cur >= self.start_last:
             return
+        if self.mode == "close" and self.pending:
+            self._run_batch(float(self.b["close"][self.cur]), self.cur)   # 尾盘：先用今收
         self.cur += 1
         self.days += 1
         self.bought_today = 0
         if self.mode == "open" and self.pending:
-            price = float(self.b["open"][self.cur])
-            ordered = [o for o in self.pending if o["side"] == "sell"] + \
-                      [o for o in self.pending if o["side"] == "buy"]
-            for o in ordered:
-                self._fill(o, price, self.cur)
-            self.pending = []
+            self._run_batch(float(self.b["open"][self.cur]), self.cur)    # 严格：先用次开
         if self.days >= self.horizon:
             self.settle()
 

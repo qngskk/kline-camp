@@ -86,44 +86,75 @@ check(px.up > 200 && px.down > 200, '画布没有画出红绿 K 线');
 check(/尾盘即时成交/.test(await text('#period-label')), '成交口径未显示在顶部');
 await shot('02-session');
 
-console.log('3. 同一天反复加仓（尾盘即时成交）');
+console.log('3. 委托篮：同日多笔加仓，点「进入下一日」才成交');
 const posOf = async () => parseFloat((await text('#act-pos')).replace('%', ''));
-const p0 = await posOf();
-await clickAdd('0.25');
-await wait(250);
-const p1 = await posOf();
-await clickAdd('0.25');
-await wait(250);
-const p2 = await posOf();
-await clickAdd('0.25');
-await wait(250);
-const p3 = await posOf();
-console.log(`   仓位: ${p0}% → ${p1}% → ${p2}% → ${p3}%`);
-check(p0 === 0, '开局应为空仓');
-check(p1 > 1 && p2 > p1 && p3 > p2, '同一天连续加仓应让仓位逐步抬高');
-check((await text('#hud-progress')).startsWith('0 /'), '尾盘模式当日操作不应推进日期');
-const rows1 = await page.$$eval('#log-list .log-row', els => els.length);
-console.log('   当日流水条数:', rows1);
-check(rows1 >= 3, '同一天应产生 3 笔买入流水');
+const sharesOf = async () => {
+  const t = await text('#pos-shares');
+  const m = t.match(/^([\d,]+)/);
+  return m ? parseInt(m[1].replace(/,/g, ''), 10) : 0;
+};
+check((await posOf()) === 0, '开局应为空仓');
+await clickAdd('0.25'); await wait(180);
+await clickAdd('0.25'); await wait(180);
+await clickAdd('0.25'); await wait(250);
+const pend = await page.$$eval('#pending-list .pend', els => els.map(e => e.textContent.replace('×', '').trim()));
+console.log('   委托篮:', JSON.stringify(pend));
+check(pend.length === 3, '三笔加仓应都进委托篮');
+check(pend[0].startsWith('1') && pend[2].startsWith('3'), '委托篮应标出输入顺序编号');
+check((await posOf()) === 0, '未点「进入下一日」前不应成交（仓位不变）');
+check((await sharesOf()) === 0, '未成交前不应有持仓');
+check((await page.$$('#log-list .log-row')).length === 0, '未成交前流水应为空');
+check((await text('#hud-progress')).startsWith('0 /'), '不应推进日期');
+await shot('03-pending-close');
 
-console.log('4. T+1：当日买入当日不能卖');
-await clickReduce('0.5');
-await wait(300);
-const toastTxt = await page.evaluate(() => document.getElementById('toast')?.textContent || '');
-console.log('   提示:', toastTxt);
-check(/T\+1/.test(toastTxt), '当日买入后减仓应提示 T+1');
+console.log('4. 委托可在进入下一日前撤销');
+await clickAdd('0.25'); await wait(200);
+check((await page.$$('#pending-list .pend')).length === 4, '应变成 4 笔');
+await page.click('#pending-list .pend:last-child i');
+await wait(200);
+check((await page.$$('#pending-list .pend')).length === 3, '撤销后应剩 3 笔');
+await clickAdd('0.25'); await wait(150);
+await page.click('#pending-list .pend:last-child i');
+await wait(200);
+check((await page.$$('#pending-list .pend')).length === 3, '重复撤销仍应剩 3 笔');
 
-console.log('5. 进入下一日后可以减仓');
+console.log('5. 进入下一日：按输入顺序一次成交（尾盘口径 = 今日收盘价）');
+const closePx = parseFloat((await text('#pending-mode')).match(/([\d.]+)/)[1]);
 await page.click('#btn-next');
-await wait(400);
-check((await text('#hud-progress')).startsWith('1 /'), '进入下一日后进度应为 1');
-const beforeReduce = await posOf();
-await clickReduce('0.5');
-await wait(300);
-const afterReduce = await posOf();
-console.log(`   仓位: ${beforeReduce}% → ${afterReduce}%`);
-check(afterReduce < beforeReduce, '减仓后仓位应下降');
-check(afterReduce > 0, '减半后仍有持仓');
+await wait(700);
+const after = await page.evaluate(() => ({
+  pos: document.getElementById('act-pos').textContent,
+  prog: document.getElementById('hud-progress').textContent,
+  rows: [...document.querySelectorAll('#log-list .log-row')].map(e => e.textContent.replace(/\s+/g, ' ')),
+  pendingHidden: document.getElementById('pending-box').classList.contains('hidden'),
+  shares: document.getElementById('pos-shares').textContent,
+}));
+console.log('   收盘价参考:', closePx, '| 成交后:', JSON.stringify(after));
+check(parseFloat(after.pos) > 60, '三笔加仓成交后仓位应超过 60%，实际 ' + after.pos);
+check(after.prog.startsWith('1 /'), '应推进到第 1 日');
+check(after.rows.length === 3, '应产生 3 笔成交流水，实际 ' + after.rows.length);
+check(after.pendingHidden, '成交后委托篮应清空');
+check(after.rows.every(r => r.includes(closePx.toFixed(2))), '尾盘口径应按今日收盘价成交');
+const held1 = await sharesOf();
+check(held1 > 0, '成交后应有持仓');
+
+console.log('5b. 同批「先加后清」：T+1 保护当批买入的股票');
+await clickAdd('0.25'); await wait(150);
+await clickReduce('1'); await wait(150);
+check((await page.$$('#pending-list .pend')).length === 2, '加仓与清仓应各成一笔委托');
+await page.click('#btn-next');
+await wait(600);
+const afterT1 = await sharesOf();
+console.log(`   清仓前底仓 ${held1} 股 → 清仓后仍持有 ${afterT1} 股（当批买入的受 T+1 保护）`);
+check(afterT1 > 0, '当批买入的股票不应被同批清仓卖掉');
+check(afterT1 < held1 + 1e9 && afterT1 !== held1, '清仓应把底仓卖掉了');
+
+console.log('5c. 隔日清仓：全部可卖');
+await clickReduce('1'); await wait(150);
+await page.click('#btn-next');
+await wait(600);
+check((await posOf()) === 0, '隔日清仓后应空仓');
+check((await sharesOf()) === 0, '持仓应归零');
 await shot('03-adjust');
 
 console.log('6. 十字光标 + 跑到期满自动结算');
@@ -207,9 +238,9 @@ await clickAdd('0.5');
 await wait(250);
 await clickAdd('0.25');
 await wait(250);
-const pend = await page.$$eval('#pending-list .pend', els => els.map(e => e.textContent.replace('×', '')));
-console.log('   委托篮:', JSON.stringify(pend));
-check(pend.length === 2, '两笔委托应都进篮');
+const pend2 = await page.$$eval('#pending-list .pend', els => els.map(e => e.textContent.replace('×', '').trim()));
+console.log('   委托篮:', JSON.stringify(pend2));
+check(pend2.length === 2, '两笔委托应都进篮');
 check(await page.$eval('#pending-box', el => !el.classList.contains('hidden')), '委托篮应显示');
 check((await posOf()) === 0, '严格模式下未成交前不应有仓位');
 await shot('06-pending');

@@ -5,18 +5,16 @@
  * ------------------------------------
  * 1. 初始资金默认 10 万元；现金 + 持仓市值 = 总资产，仓位 = 持仓市值 / 总资产。
  * 2. 决策只能基于「已揭示的最后一根 K 线」及其之前的信息。
- * 3. 成交口径二选一（开局设置）：
- *      - 尾盘即时成交 fillMode='close'：下单立刻按**当日收盘价**成交，当日可反复加减仓，
- *        持仓 / 成本 / 浮盈实时更新。这是「看到收盘价后按收盘价成交」的近似。
- *      - 严格模式 fillMode='open'：下单进入**今日委托篮**（可逐笔撤销），
- *        点「进入下一日」时统一按**次日开盘价**成交（先卖后买）。
+ * 3. 下单方式（两种口径一致）：加仓 / 减仓都先进**今日委托篮**，成交前可逐笔撤销，
+ *    点「进入下一日」时**按输入顺序**统一结算。两种口径只差成交价：
+ *      - fillMode='close' 尾盘：按**今日收盘价**成交（提交时价格已可见，属近似）；
+ *      - fillMode='open'  严格：按**次日开盘价**成交（零未来信息）。
  * 4. 加减仓粒度：
  *      加仓 1/4 | 1/3 | 1/2  = 买入「当前总资产 × 比例」的股票（受可用现金约束）
  *      加到满仓              = 用全部可用现金买入
  *      减仓 1/4 | 1/3 | 1/2  = 卖出「当前可卖持仓 × 比例」，按一手 100 股向下取整
  *      清仓                  = 卖出全部可卖持仓
- * 5. T+1：当日买入的股票当日不可卖（尾盘模式下由 sellableShares 保证；
- *    严格模式下委托在次日开盘成交，天然满足）。
+ * 5. T+1：同一批委托里刚买入的股票，当批不能再卖出（成交时按"总持仓 − 本批已买入"重算可卖量）。
  * 6. 涨跌停：成交价触及涨停买不进、触及跌停卖不出（主板 10%，创业板/科创板 20%）。
  * 7. 走满 30/60/90 个交易日自动结算；「结束交易」尾盘模式按当收即时清仓，
  *    严格模式放弃今日委托并以次日开盘价清仓。
@@ -228,9 +226,25 @@ export class Session {
     const id = ++this._seq;
 
     if (type === 'add' || type === 'full') {
+      // 入篮前先粗判一次，避免"点了一堆、过了一天才告诉你买不起"
+      //   尾盘口径：成交价已知（今日收盘价），可以精确判断
+      //   开盘口径：成交价未知，用"次日跌停价"这个最便宜的极端情况判断，
+      //             只有连它都买不起才拦下来（否则可能误杀跳空低开才买得起的委托）
+      const est = this.fillMode === 'close'
+        ? this.bars.close[this.cur]
+        : limitDownOf(this.bars.close[this.cur], this.boardIdx);
+      const perLot = est * LOT_SIZE * (this.fees ? 1 + FEE.commission + FEE.transfer : 1);
+      // 同批已挂的卖出委托会回款，也要算进可用资金（否则「清仓 + 买回」会被误拦）
+      const queuedSell = this.pending.reduce((a, o) => a + (o.side === 'sell' ? o.shares : 0), 0);
+      const avail = this.cash + queuedSell * est;
+      if (avail < perLot) {
+        return { ok: false, code: 'noFunds',
+                 msg: `可用资金 ${Math.round(this.cash)} 元，不足一手（100 股 ≈ ${Math.round(est * LOT_SIZE)} 元` +
+                      (this.fillMode === 'close' ? '）' : '，已按次日跌停价估算）') };
+      }
       const full = type === 'full' || f >= 0.999999;
       // budget 只是「意图额度」，成交时再与当时的可用现金取小
-      // （这样严格模式下「清仓 + 买回」这类换仓委托也能成立）
+      // （这样「清仓 + 买回」这类换仓委托也能成立）
       const budget = full ? null : Math.max(0, this.equity * f);
       const label = full ? '满仓' : `加 ${fracLabel(f)}`;
       return { ok: true, order: { id, side: 'buy', kind: full ? 'full' : 'add', fraction: f, budget, label } };
@@ -256,22 +270,17 @@ export class Session {
   }
 
   /**
-   * 下单。
-   *   尾盘模式：立刻按当日收盘价成交，可反复加减仓；
-   *   严格模式：进入今日委托篮，等「进入下一日」时按次日开盘价统一成交。
+   * 下单 —— 一律进入「今日委托」篮，**点「进入下一日」时才统一结算**。
+   * 两种口径只差成交价：
+   *   尾盘即时成交 close：按「今日收盘价」成交（提交时价格已可见）
+   *   次日开盘价成交 open：按「次日开盘价」成交
+   * 委托在进入下一日之前都可以撤销，且**严格按输入顺序处理**。
    */
   order(type, fraction = 1) {
     const p = this.plan(type, fraction);
     if (!p.ok) return p;
-    if (this.fillMode === 'open') {
-      this.pending.push(p.order);
-      return { ok: true, queued: true, order: p.order };
-    }
-    const price = this.bars.close[this.cur];
-    const r = this._fill(p.order, price, this.cur);
-    if (!r.ok) return r;
-    this.curve.push({ idx: this.cur, equity: this.equity });
-    return { ok: true, fill: r.fill, order: p.order };
+    this.pending.push(p.order);
+    return { ok: true, queued: true, order: p.order };
   }
 
   /** 撤销今日委托 */
@@ -285,27 +294,28 @@ export class Session {
   clearPending() { this.pending = []; }
 
   // ---- 推进 --------------------------------------------------------------
-  /** 进入下一日：严格模式会先按次日开盘价执行今日委托篮 */
+  /**
+   * 进入下一日 —— 今日委托篮在这里统一结算，**严格按输入顺序**逐笔处理。
+   *   尾盘口径：先按「今日收盘价」成交，再推进到下一日；
+   *   开盘口径：先推进到下一日，再按「次日开盘价」成交。
+   */
   nextDay() {
     if (!this.canAct) return { ok: false, code: 'finished', msg: '本轮训练已结束' };
-    const nextIdx = this.cur + 1;
-    this.cur = nextIdx;
-    this.day += 1;
-    this.boughtToday = 0;
-
     const fills = [], rejects = [];
-    if (this.fillMode === 'open' && this.pending.length) {
-      const price = this.bars.open[nextIdx];
-      // 先卖后买：卖出回款可以供买入使用
-      const ordered = [...this.pending.filter(o => o.side === 'sell'),
-                       ...this.pending.filter(o => o.side === 'buy')];
-      for (const o of ordered) {
-        const r = this._fill(o, price, nextIdx);
+    const run = (price, idx) => {
+      for (const o of this.pending) {          // 输入顺序，不做先卖后买的重排
+        const r = this._fill(o, price, idx);
         if (r.ok) fills.push(r.fill);
         else rejects.push({ order: o, code: r.code, msg: r.msg });
       }
       this.pending = [];
-    }
+    };
+
+    if (this.fillMode === 'close') run(this.bars.close[this.cur], this.cur);
+    this.cur += 1;
+    this.day += 1;
+    this.boughtToday = 0;
+    if (this.fillMode === 'open' && this.pending.length) run(this.bars.open[this.cur], this.cur);
 
     this.curve.push({ idx: this.cur, equity: this.equity });
     let auto = false;
@@ -350,13 +360,19 @@ export class Session {
       return { ok: true, fill };
     }
 
-    // 卖出
+    // 卖出：数量在**成交那一刻**按实时可卖持仓重算（plan 时的股数只作预估）
+    // 可卖 = 总持仓 − 本批已买入（T+1：同一批里刚买的当日不能卖）
     if (price <= lim.down + EPS) {
       this.events.push({ date, type: 'warn', text: `跌停封板（${price.toFixed(2)}），卖出委托未成交` });
       return { ok: false, code: 'limitDown', msg: `${date} 跌停封板，卖不出` };
     }
-    const avail = this.shares;
-    let sh = Math.min(order.shares, avail);
+    const base = Math.max(0, this.shares - this.boughtToday);
+    if (base <= 0) {
+      return { ok: false, code: 't1',
+               msg: this.boughtToday > 0 ? '本批买入的股票 T+1 才能卖' : '没有可卖持仓' };
+    }
+    let sh = order.kind === 'clear' ? base : lotFloor(base * order.fraction);
+    sh = Math.min(sh, base);
     if (sh <= 0) return { ok: false, code: 'noPosition', msg: '没有可卖持仓' };
     const s = sellProceeds(price, sh, this.fees);
     const cost = this.costTotal * (sh / this.shares);
@@ -381,7 +397,11 @@ export class Session {
   /** 结束交易 */
   endSession() {
     if (this.finished) return { ok: false, msg: '本轮训练已结束' };
-    if (this.fillMode === 'open' && this.canAct && this.shares > 0) {
+    if (this.fillMode === 'close') {
+      const dropped = this.pending.length;
+      return { ok: true, settled: this.settle('manual'), drops: dropped };
+    }
+    if (this.canAct && this.shares > 0) {
       const dropped = this.pending.length;
       this.clearPending();                 // 放弃今日未成交委托
       const r = this.order('clear');       // 入篮：次日开盘清仓

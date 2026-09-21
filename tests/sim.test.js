@@ -138,18 +138,18 @@ test('严格模式：委托可撤销，撤销后不成交', () => {
   assert.equal(s.cash, 100000);
 });
 
-test('严格模式：同日多笔委托按 先卖后买 依次成交，回款可用于买入', () => {
+test('严格模式：同日多笔同样按输入顺序成交', () => {
   const bars = makeBars();
-  const s = newSession(bars);
+  const s = newSession(bars);          // fillMode='open'
   s.order('add', 1);
-  s.nextDay();                                  // 第 61 根开盘满仓买入
+  s.nextDay();                         // 第 61 开盘建仓
   const held = s.shares;
   assert.ok(held > 0);
-  s.order('clear');                             // 先清仓
-  s.order('add', 0.5);                          // 再买回（用清仓回款）
+  s.order('clear');                    // 第 1 笔：清仓（回款）
+  s.order('add', 0.5);                 // 第 2 笔：买回
   const n = s.nextDay();
   assert.equal(n.fills.length, 2);
-  assert.equal(n.fills[0].side, 'sell');
+  assert.equal(n.fills[0].side, 'sell', '先输入的先成交');
   assert.equal(n.fills[1].side, 'buy');
   assert.equal(n.fills[0].price, bars.open[62]);
   assert.equal(n.fills[1].price, bars.open[62]);
@@ -195,104 +195,135 @@ test('严格模式：涨停开盘买不进、跌停开盘卖不出', () => {
 });
 
 // ---------------------------------------------------------------- 尾盘即时模式
-test('尾盘模式：下单立即按当日收盘价成交，且不推进日期', () => {
+test('尾盘模式：下单先进委托篮，点「进入下一日」才按今日收盘价成交', () => {
   const bars = makeBars();
   const s = closeSession(bars);
   const r = s.order('add', 1);
   assert.equal(r.ok, true);
-  assert.equal(r.fill.price, bars.close[60], '成交价 = 当日收盘价');
-  assert.equal(s.cur, 60, '不推进');
+  assert.equal(r.queued, true, '应进委托篮而不是立刻成交');
+  assert.equal(s.shares, 0, '未进入下一日前不成交');
+  assert.equal(s.cash, 100000, '未进入下一日前现金不动');
   assert.equal(s.day, 0);
+  assert.equal(s.pending.length, 1);
+
+  const n = s.nextDay();
+  assert.equal(n.fills.length, 1);
+  assert.equal(n.fills[0].price, bars.close[60], '成交价 = 今日收盘价');
+  assert.equal(n.fills[0].idx, 60, '记在提交委托的那一天');
+  assert.equal(s.cur, 61);
+  assert.equal(s.day, 1);
+  assert.equal(s.pending.length, 0);
   assert.ok(s.shares > 0 && s.cash >= 0);
 });
 
-test('尾盘模式：同一天可反复加仓，仓位逐步抬高且不超过满仓', () => {
+test('尾盘模式：同一天挂多笔加仓，按输入顺序一次成交、仓位逐步抬高', () => {
   const bars = makeBars();
   const s = closeSession(bars);
-  const trail = [];
-  for (let i = 0; i < 4; i++) {
-    const r = s.order('add', 0.25);
-    assert.equal(r.ok, true, `第 ${i + 1} 笔加仓应成功`);
-    trail.push(Number(s.positionPct.toFixed(4)));
-    assert.ok(s.cash >= 0);
+  for (let i = 0; i < 3; i++) {
+    assert.equal(s.order('add', 0.25).ok, true, `第 ${i + 1} 笔应入篮成功`);
+    assert.equal(s.shares, 0);
   }
-  assert.equal(trail.length, 4);
-  for (let i = 1; i < trail.length; i++) assert.ok(trail[i] > trail[i - 1], '仓位应递增');
-  assert.ok(trail[3] > 0.95, `四次 1/4 加仓后应接近满仓，实际 ${trail[3]}`);
-  assert.equal(s.day, 0, '整段操作仍在同一天');
+  assert.equal(s.pending.length, 3);
+
+  const n = s.nextDay();
+  assert.equal(n.fills.length, 3, '三笔都要成交');
+  assert.ok(n.fills.every(f => f.price === bars.close[60]), '都按同一收盘价');
+  assert.ok(n.fills.every(f => f.shares > 0));
+  for (let i = 1; i < n.fills.length; i++) {
+    assert.ok(n.fills[i].sharesAfter > n.fills[i - 1].sharesAfter,
+      '成交明细里的持仓应逐笔递增（证明是按输入顺序算的）');
+  }
+  assert.ok(s.positionPct > 0.6, `三次 1/4 加仓后仓位应明显抬高，实际 ${s.positionPct}`);
+  assert.ok(s.cash >= 0);
 });
 
-test('尾盘模式：加仓后再减仓，仓位回落', () => {
+test('尾盘模式：已持仓时可以同批减仓，仓位回落', () => {
   const bars = makeBars();
   const s = closeSession(bars);
   s.order('add', 1);
   s.nextDay();                       // 隔日，持仓变为可卖
   const before = s.shares;
+  assert.ok(before > 0);
   const r = s.order('reduce', 0.5);
   assert.equal(r.ok, true);
-  assert.equal(r.fill.shares, Math.floor(before * 0.5 / LOT_SIZE) * LOT_SIZE);
-  assert.equal(s.shares, before - r.fill.shares);
+  const n = s.nextDay();
+  assert.equal(n.fills.length, 1);
+  assert.equal(n.fills[0].shares, Math.floor(before * 0.5 / LOT_SIZE) * LOT_SIZE);
+  assert.equal(s.shares, before - n.fills[0].shares);
   assert.ok(s.positionPct < 0.6, '减半后仓位应明显下降');
 });
 
-test('尾盘模式：T+1 —— 当日买入当日不能卖', () => {
+test('尾盘模式：T+1 —— 同批买入的股票当批不能卖', () => {
   const bars = makeBars();
   const s = closeSession(bars);
-  s.order('add', 1);
-  assert.ok(s.shares > 0);
-  assert.equal(s.sellableShares, 0, '当日买入不可卖');
-  const r = s.order('reduce', 0.5);
-  assert.equal(r.ok, false);
-  assert.equal(r.code, 't1');
-  const r2 = s.order('clear');
-  assert.equal(r2.ok, false, '清仓同样受 T+1 限制');
-  s.nextDay();
-  assert.equal(s.sellableShares, s.shares, '次日全部可卖');
-  assert.equal(s.order('clear').ok, true);
+  s.order('add', 0.5);
+  s.nextDay();                        // 第 61 日持有半仓底仓
+  const held = s.shares;
+  assert.equal(s.sellableShares, held, '隔日全部可卖');
+
+  s.order('add', 0.25);               // 第 61 日同批：先加仓
+  s.order('clear');                   // 再清仓 → 只能卖底仓
+  const n = s.nextDay();
+  assert.equal(n.fills.length, 2);
+  assert.equal(n.fills[0].side, 'buy');
+  assert.equal(n.fills[1].side, 'sell');
+  assert.equal(n.fills[1].shares, held, '清仓只卖掉底仓，当批买入的受 T+1 保护');
+  assert.ok(s.shares > 0, '当批买入的还在');
+  assert.equal(s.sellableShares, s.shares, '进入下一日后全部可卖');
+  s.order('clear');
+  const n2 = s.nextDay();
+  assert.equal(s.shares, 0);
+  assert.equal(n2.fills.length, 1);
 });
 
 test('尾盘模式：涨停封板买不进、跌停封板卖不出', () => {
   const bars = makeBars();
   bars.close[60] = limitUpOf(bars.close[59], 0);
   const s = closeSession(bars);
-  const r = s.order('add', 1);
-  assert.equal(r.ok, false);
-  assert.equal(r.code, 'limitUp');
+  assert.equal(s.order('add', 1).ok, true, '入篮时不判定价格');
+  const n = s.nextDay();
+  assert.equal(n.fills.length, 0);
+  assert.equal(n.rejects.length, 1);
+  assert.equal(n.rejects[0].code, 'limitUp', '按收盘价成交时才判涨停封板');
+  assert.equal(s.shares, 0);
 
   const bars2 = makeBars();
   const s2 = closeSession(bars2);
   s2.order('add', 1);
   s2.nextDay();
   bars2.close[61] = limitDownOf(bars2.close[60], 0);
-  const r2 = s2.order('clear');
-  assert.equal(r2.ok, false);
-  assert.equal(r2.code, 'limitDown');
-  assert.ok(s2.shares > 0);
+  s2.order('clear');
+  const n2 = s2.nextDay();
+  assert.equal(n2.rejects[0].code, 'limitDown');
+  assert.ok(s2.shares > 0, '卖不出时持仓保留');
 });
 
-test('尾盘模式：同一日内用旧仓反复加减（T+1 只锁当日买入）', () => {
+test('同一天多笔委托严格按输入顺序计算（顺序会改变结果）', () => {
   const bars = makeBars();
-  const s = closeSession(bars, { fees: true });
-  s.order('add', 0.5);               // 第 60 日尾盘建底仓
-  s.nextDay();                       // 进入第 61 日，底仓可卖
-  const day0 = s.day;
-  const base = s.log.length;
-  const path = [];
-  const plan = [['reduce', 0.5], ['add', 0.5], ['reduce', 0.25], ['add', 0.25], ['full', 1]];
-  for (const [t, f] of plan) {
-    const r = s.order(t, f);
-    assert.equal(r.ok, true, `${t} ${f} 应成功`);
-    assert.ok(s.cash >= -1e-9);
-    assert.ok(s.shares >= 0);
-    assert.ok(Math.abs(s.equity - (s.cash + s.shares * bars.close[s.cur])) < 1e-6, '账目守恒');
-    path.push(Number(s.positionPct.toFixed(3)));
-  }
-  assert.equal(s.day, day0, '五笔操作全部发生在同一天，日期未推进');
-  assert.equal(s.log.length - base, 5, '当日新增 5 笔成交');
-  assert.ok(path[0] < 0.5, '首笔减半后仓位下降');
-  assert.ok(path[path.length - 1] > 0.8, '最后一笔满仓后仓位抬高');
-  assert.ok(s.boughtToday > 0, '当日买入的股票被 T+1 锁住');
-  assert.equal(s.sellableShares, s.shares - s.boughtToday, '可卖 = 总持仓 − 当日买入');
+  // A：先「满仓」再「清仓」——买入先吃掉现金，清仓只能卖底仓
+  const a = closeSession(bars);
+  a.order('add', 0.5); a.nextDay();
+  const heldA = a.shares;
+  a.order('full');
+  a.order('clear');
+  const na = a.nextDay();
+  assert.equal(na.fills.length, 2);
+  assert.equal(na.fills[0].side, 'buy');
+  assert.equal(na.fills[1].side, 'sell');
+  assert.equal(na.fills[1].shares, heldA, '第 2 笔清仓只动了原本的底仓');
+
+  // B：先「清仓」再「满仓」——卖出先回款，买入用这笔钱
+  const b = closeSession(bars);
+  b.order('add', 0.5); b.nextDay();
+  b.order('clear');
+  b.order('full');
+  const nb = b.nextDay();
+  assert.equal(nb.fills.length, 2);
+  assert.equal(nb.fills[0].side, 'sell');
+  assert.equal(nb.fills[1].side, 'buy');
+  assert.ok(b.shares > 0, '清仓回款后能买回来');
+  assert.ok(b.cash >= 0);
+  assert.notEqual(a.shares, b.shares, '不同输入顺序应得到不同结果');
 });
 
 test('减仓不足一手时被拒绝，并提示用清仓', () => {
@@ -306,6 +337,23 @@ test('减仓不足一手时被拒绝，并提示用清仓', () => {
   assert.equal(r.ok, false);
   assert.equal(r.code, 'tooSmall');
   assert.equal(s.order('clear').ok, true, '清仓应始终可用');
+});
+
+test('买不起一手时在入篮前就被拦下（两种口径）', () => {
+  // 每手 1 万元：10 万本金在 100 元股价下买不起 1000 股…… 这里用 1200 元/股
+  const bars = makeBars(220, { price0: 1200 });
+  for (const mode of ['close', 'open']) {
+    const s = closeSession(bars, { fillMode: mode, capital: 100000 });
+    const r = s.order('add', 0.25);
+    assert.equal(r.ok, false, `${mode} 应直接拒绝`);
+    assert.equal(r.code, 'noFunds');
+    assert.equal(s.pending.length, 0, '被拒的委托不应进篮');
+  }
+  // 资金充足时正常入篮
+  const bars2 = makeBars(220, { price0: 10 });
+  const s2 = closeSession(bars2);
+  assert.equal(s2.order('add', 0.25).ok, true);
+  assert.equal(s2.pending.length, 1);
 });
 
 test('空仓时不能减仓', () => {
@@ -343,17 +391,19 @@ test('操作期满自动结算，剩余持仓按最后一日收盘价折算', ()
   assert.ok(Math.abs(s.equity - s.cash) < 1e-9);
 });
 
-test('结束交易：尾盘模式按当收即时清仓', () => {
+test('结束交易：尾盘模式按当收清仓，并放弃未成交委托', () => {
   const bars = makeBars();
   const s = closeSession(bars);
-  s.order('add', 1);
+  s.order('add', 0.5); s.nextDay();    // 第 60 日收盘建半仓（留出现金）
+  s.order('add', 0.25);                // 挂一笔，应当被放弃
   const r = s.endSession();
   assert.equal(r.ok, true);
+  assert.equal(r.drops, 1, '应报告放弃了 1 笔委托');
   assert.equal(s.finished, true);
-  assert.equal(s.settleReason, 'manual');
+  assert.equal(s.pending.length, 0);
   const sell = s.log.find(t => t.side === 'settle');
-  assert.equal(sell.price, bars.close[60], '按当日收盘价结算');
-  assert.equal(s.day, 0, '不推进日期');
+  assert.equal(sell.price, bars.close[61], '按当日收盘价结算');
+  assert.equal(s.day, 1, '不推进日期');
 });
 
 test('结束交易：严格模式放弃委托并以次日开盘价清仓', () => {

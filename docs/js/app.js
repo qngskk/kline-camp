@@ -17,8 +17,10 @@ const POSITIONS = [
   { v: 0.25, label: '1/4 仓' },
 ];
 const FILL_HINT = {
-  close: '下单立刻按<b>当日收盘价</b>成交，同一天可反复加仓 / 减仓，持仓与浮盈实时变化；当日买入的股票 T+1 才能卖。',
-  open: '下单进入「<b>今日委托</b>」篮，可逐笔撤销；点「进入下一日」时统一按<b>次日开盘价</b>成交（先卖后买）。',
+  close: '委托按<b>当日收盘价</b>成交：先进入「今日委托」篮，成交前可随时撤销，' +
+         '点「进入下一日」时<b>按输入顺序</b>一次结算。',
+  open: '委托按<b>次日开盘价</b>成交：先进入「今日委托」篮，成交前可随时撤销，' +
+        '点「进入下一日」时<b>按输入顺序</b>一次结算。',
 };
 
 const state = {
@@ -241,10 +243,12 @@ function renderAll(fit = false) {
   $('btn-end').disabled = s.finished;
 
   const pend = $('pending-box');
-  if (s.fillMode === 'open' && s.pending.length) {
+  if (s.pending.length) {
     pend.classList.remove('hidden');
-    $('pending-list').innerHTML = s.pending.map(o =>
-      `<span class="pend ${o.side}">${o.label}<i data-cancel="${o.id}" title="撤销">×</i></span>`).join('');
+    $('pending-mode').textContent = s.fillMode === 'close'
+      ? `按今日收盘价 ${s.price.toFixed(2)} 成交` : `按 ${fmtDate(s.nextDate)} 开盘价成交`;
+    $('pending-list').innerHTML = s.pending.map((o, i) =>
+      `<span class="pend ${o.side}"><b>${i + 1}</b>${o.label}<i data-cancel="${o.id}" title="撤销">×</i></span>`).join('');
     $('pending-list').querySelectorAll('[data-cancel]').forEach(el =>
       el.addEventListener('click', () => { s.cancelOrder(Number(el.dataset.cancel)); renderAll(false); }));
   } else {
@@ -253,9 +257,12 @@ function renderAll(fit = false) {
 
   $('act-hint').innerHTML = s.finished
     ? '本轮已结束。'
-    : s.fillMode === 'close'
-      ? `尾盘即时：按今收 <b>${s.price.toFixed(2)}</b> 成交，可反复加减仓；定好仓位后点「进入下一日」。`
-      : `今日委托将在 <b>${fmtDate(s.nextDate)} 开盘价</b>成交；可继续加减仓，或点委托标签上的 × 撤销。`;
+    : s.pending.length
+      ? `已挂 <b>${s.pending.length}</b> 笔委托：点「进入下一日」时<b>按输入顺序</b>一次成交；` +
+        `成交前都可以点标签上的 × 撤销。`
+      : s.fillMode === 'close'
+        ? `加仓/减仓先入委托篮（按今日收盘价 <b>${s.price.toFixed(2)}</b> 成交），定好后点「进入下一日」结算。`
+        : `加仓/减仓先入委托篮（按 <b>${fmtDate(s.nextDate)} 开盘价</b>成交），定好后点「进入下一日」结算。`;
 
   // 成交流水
   const box = $('log-list');
@@ -294,20 +301,18 @@ function openConfirm({ title, body, okText = '确定', onOk }) {
 
 function closeConfirm() { confirmCb = null; hide('#modal-confirm'); }
 
-/** 下单统一入口：type = add | full | reduce | clear */
+/** 下单统一入口：type = add | full | reduce | clear
+ *  一律只入「今日委托」篮，点「进入下一日」才统一结算；进入下一日前可随时撤销。 */
 function placeOrder(type, fraction) {
   const s = state.session;
   if (!s) return;
   const r = s.order(type, fraction);
   if (!r.ok) { toast(r.msg, 'warn'); return; }
-  if (r.queued) {
-    toast(`已加入今日委托：<b>${r.order.label}</b>（${fmtDate(s.nextDate)} 开盘价成交）`, 'info', 2200);
-  } else if (r.fill) {
-    const f = r.fill;
-    toast(`${fmtDate(f.date)} ${f.label}：${f.side === 'buy' ? '买入' : '卖出'} ${f.shares} 股 @ ${f.price.toFixed(2)}` +
-          (f.pnl != null ? `，本笔盈亏 ${f.pnl >= 0 ? '+' : ''}${Math.round(f.pnl)} 元` : ''),
-          f.side === 'buy' ? 'buy' : 'sell', 2800);
-  }
+  const how = s.fillMode === 'close'
+    ? `按今日收盘价 ${s.price.toFixed(2)}`
+    : `按 ${fmtDate(s.nextDate)} 开盘价`;
+  toast(`第 ${s.pending.length} 笔委托：<b>${r.order.label}</b>（${how}，点「进入下一日」成交）`,
+        'info', 2400);
   renderAll(false);
 }
 
@@ -317,17 +322,6 @@ function doAdd(fraction) {
   const type = fraction >= 0.999999 ? 'full' : 'add';
   const p = s.plan(type, fraction);            // 先试算：涨跌停 / 资金不足当场说清楚
   if (!p.ok) { toast(p.msg, 'warn'); return; }
-  if (s.fillMode === 'close' && type === 'full') {
-    const est = p.order.budget == null ? s.cash : Math.min(s.cash, p.order.budget);
-    openConfirm({
-      title: '满仓买入',
-      body: `<div>将用光全部可用现金 <b>${money(s.cash)}</b> 元（本次额度 ${money(est)} 元），按今收 ${s.price.toFixed(2)} 元买入。</div>` +
-            `<div class="k" style="margin-top:6px">按一手 100 股向下取整，不足一手的零钱会留下。</div>`,
-      okText: '确定满仓',
-      onOk: () => { placeOrder(type, fraction); return true; },
-    });
-    return;
-  }
   placeOrder(type, fraction);
 }
 
@@ -335,17 +329,8 @@ function doReduce(fraction) {
   const s = state.session;
   if (!s || !s.canAct) return;
   const type = fraction >= 0.999999 ? 'clear' : 'reduce';
-  const p = s.plan(type, fraction);            // 先试算：T+1 / 空仓 / 不足一手当场说清楚
+  const p = s.plan(type, fraction);            // 先试算：空仓 / 无可卖 / 不足一手当场说清楚
   if (!p.ok) { toast(p.msg, 'warn'); return; }
-  if (s.fillMode === 'close' && type === 'clear') {
-    openConfirm({
-      title: '清仓',
-      body: `<div>将卖出可卖的 <b>${p.order.shares}</b> 股，按今收 ${s.price.toFixed(2)} 元成交。</div>`,
-      okText: '确定清仓',
-      onOk: () => { placeOrder(type, fraction); return true; },
-    });
-    return;
-  }
   placeOrder(type, fraction);
 }
 
@@ -359,7 +344,7 @@ function doNext() {
           (f.pnl != null ? `，本笔盈亏 ${f.pnl >= 0 ? '+' : ''}${Math.round(f.pnl)} 元` : ''),
           f.side === 'buy' ? 'buy' : 'sell', 2800);
   }
-  for (const j of r.rejects) toast(`${fmtDate(s.date)} ${j.msg}`, 'warn', 3200);
+  for (const j of r.rejects) toast(`${fmtDate(s.date)} ${j.msg}`, 'warn', 3400);
   renderAll(false);
   if (s.finished) setTimeout(showResult, 420);
 }
@@ -371,16 +356,18 @@ function doEnd() {
   if (s.shares <= 0) {
     msg = '当前空仓，将直接按最新价结算。';
   } else if (s.fillMode === 'close') {
-    msg = `将按<b>当日收盘价 ${s.price.toFixed(2)}</b> 清仓并结算` +
-          (s.boughtToday > 0 ? `（含今日买入的 ${s.boughtToday} 股，训练结束一并结算）` : '') + '。';
+    msg = `将按<b>当日收盘价 ${s.price.toFixed(2)}</b> 清仓并结算。`;
   } else if (s.canAct) {
-    msg = `将放弃今日未成交委托，并以 <b>${fmtDate(s.nextDate)} 开盘价</b> 清仓结算。`;
+    msg = `将以 <b>${fmtDate(s.nextDate)} 开盘价</b> 清仓结算。`;
   } else {
     msg = '将按最后一日收盘价清仓并结算。';
   }
+  const drop = s.pending.length;
   openConfirm({
     title: '结束交易',
-    body: `<div>${msg}</div><div class="k" style="margin-top:6px">结算后本轮不可继续。</div>`,
+    body: `<div>${msg}</div>` +
+          (drop ? `<div style="color:#fbbf24;margin-top:4px">今日 ${drop} 笔未成交委托会被放弃。</div>` : '') +
+          `<div class="k" style="margin-top:6px">结算后本轮不可继续。</div>`,
     okText: '结束并结算',
     onOk: () => {
       const r = s.endSession();
