@@ -1,0 +1,15 @@
+# 复权因子缓存（可用 tools/build_data.py 重建，无需入库）
+data/cache/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

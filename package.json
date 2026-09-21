@@ -1,0 +1,11 @@
+{
+  "name": "kline-camp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "重生之K线股王 · K线训练营（静态站 + 通达信前复权数据构建）",
+  "scripts": {
+    "test": "node --test tests/sim.test.js tests/decode.test.js tests/integration.test.js",
+    "serve": "python3 -m http.server 8123 --directory docs"
+  }
+}

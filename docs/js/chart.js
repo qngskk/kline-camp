@@ -1,0 +1,423 @@
+/**
+ * Canvas K 线图：K 线 + 成交量 + 买卖标记 + 成本线 + 十字光标。
+ * 不依赖任何第三方库；A 股配色（红涨绿跌）。
+ */
+import { fmtDate, fmtVol, fmtAmount } from './decode.js';
+
+const UP = '#ef4444';
+const DOWN = '#22c55e';
+const FLAT = '#94a3b8';
+const TEXT = '#cbd5e1';
+const MUTED = '#8b9bb4';
+const GRID = 'rgba(148,163,184,0.13)';
+const CROSS = 'rgba(226,232,240,0.75)';
+const MA_COLORS = ['#f59e0b', '#38bdf8', '#c084fc', '#f472b6'];
+
+function niceTicks(min, max, count) {
+  if (!(max > min)) return [min];
+  const raw = (max - min) / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag;
+  const out = [];
+  for (let v = Math.ceil(min / step) * step; v <= max + 1e-9; v += step) out.push(v);
+  return out;
+}
+
+export class KChart {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.bars = null;
+    this.ma = [];
+    this.marks = [];
+    this.cost = null;
+    this.limit = 0;          // 最多画到哪根 bar（含）
+    this.viewFrom = 0;
+    this.viewTo = 0;
+    this.hover = null;
+    this.pad = { l: 8, r: 64, t: 10, b: 22 };
+    this.drag = null;
+    this.maPeriods = [5, 10, 20];
+    this.showMA = true;
+    this._bindEvents();
+    this._ro = new ResizeObserver(() => this.resize());
+    this._ro.observe(canvas.parentElement || canvas);
+    this.resize();
+  }
+
+  // ---- 数据 --------------------------------------------------------------
+  setData(bars, limit = bars ? bars.n - 1 : 0) {
+    this.bars = bars;
+    this.limit = limit;
+    this.hover = null;
+    if (bars) {
+      this.ma = this.maPeriods.map(p => movingAverage(bars.close, p));
+      const end = limit;
+      const from = Math.max(0, end - Math.min(120, end + 1) + 1);
+      this.setView(from, end);
+    }
+    this.render();
+  }
+
+  setLimit(limit, follow = true) {
+    if (!this.bars) return;
+    const wasAtRight = this.viewTo >= this.limit;
+    const oldLimit = this.limit;
+    this.limit = Math.min(limit, this.bars.n - 1);
+    if (follow && wasAtRight && this.limit > oldLimit) {
+      const shift = this.limit - oldLimit;
+      this.setView(this.viewFrom + shift, this.viewTo + shift);
+    }
+    this.render();
+  }
+
+  setMarks(marks) { this.marks = marks || []; this.render(); }
+  setCost(price) { this.cost = price; this.render(); }
+  setShowMA(on) { this.showMA = !!on; this.render(); }
+
+  setView(from, to) {
+    if (!this.bars) return;
+    const maxIdx = this.limit;
+    let count = Math.max(20, Math.min(to - from + 1, maxIdx + 1));
+    let f = Math.max(0, Math.min(from, maxIdx + 1 - count));
+    let t = Math.min(maxIdx, f + count - 1);
+    f = Math.max(0, t - count + 1);
+    this.viewFrom = f;
+    this.viewTo = t;
+    this.zoom = count;
+  }
+
+  /** 让视图显示 end 之前 minBars 根 K 线 */
+  autoView(end, minBars = 90) {
+    const to = Math.min(end, this.limit);
+    const from = Math.max(0, to - minBars + 1);
+    this.setView(from, to);
+    this.render();
+  }
+
+  resize() {
+    const el = this.canvas;
+    const parent = el.parentElement || el;
+    const w = parent.clientWidth, h = parent.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    if (el.width !== Math.round(w * dpr) || el.height !== Math.round(h * dpr)) {
+      el.width = Math.round(w * dpr);
+      el.height = Math.round(h * dpr);
+    }
+    el.style.width = w + 'px';
+    el.style.height = h + 'px';
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.W = w; this.H = h;
+    this.render();
+  }
+
+  // ---- 几何 --------------------------------------------------------------
+  _geom() {
+    const { l, r, t, b } = this.pad;
+    const plotW = Math.max(10, this.W - l - r);
+    const plotH = Math.max(10, this.H - t - b);
+    const volH = Math.max(30, Math.round(plotH * 0.22));
+    const gap = 10;
+    const priceH = plotH - volH - gap;
+    return {
+      x: l, plotW,
+      price: { x: l, y: t, w: plotW, h: priceH },
+      vol: { x: l, y: t + priceH + gap, w: plotW, h: volH },
+    };
+  }
+
+  _x(i, g) {
+    const count = this.viewTo - this.viewFrom + 1;
+    const cw = g.plotW / count;
+    return g.x + (i - this.viewFrom + 0.5) * cw;
+  }
+
+  _idxAt(px, g) {
+    const count = this.viewTo - this.viewFrom + 1;
+    const cw = g.plotW / count;
+    return Math.max(this.viewFrom, Math.min(this.viewTo, Math.floor((px - g.x) / cw) + this.viewFrom));
+  }
+
+  // ---- 渲染 --------------------------------------------------------------
+  render() {
+    const ctx = this.ctx;
+    if (!this.W) return;
+    ctx.clearRect(0, 0, this.W, this.H);
+    if (!this.bars || this.bars.n === 0) return;
+    const g = this._geom();
+    const vf = this.viewFrom, vt = this.viewTo;
+    const bars = this.bars;
+
+    let pmin = Infinity, pmax = -Infinity, vmax = 0;
+    for (let i = vf; i <= vt; i++) {
+      if (bars.low[i] < pmin) pmin = bars.low[i];
+      if (bars.high[i] > pmax) pmax = bars.high[i];
+      if (bars.vol[i] > vmax) vmax = bars.vol[i];
+    }
+    if (this.showMA) {
+      for (const arr of this.ma) {
+        for (let i = vf; i <= vt; i++) {
+          const v = arr[i];
+          if (isFinite(v)) { if (v < pmin) pmin = v; if (v > pmax) pmax = v; }
+        }
+      }
+    }
+    if (pmin === Infinity) { pmin = 0; pmax = 1; }
+    const padP = (pmax - pmin) * 0.06 || pmax * 0.01 || 1;
+    pmin -= padP; pmax += padP;
+    if (pmin < 0) pmin = 0;
+    if (vmax <= 0) vmax = 1;
+
+    const yP = p => g.price.y + (pmax - p) / (pmax - pmin) * g.price.h;
+    const yV = v => g.vol.y + g.vol.h - (v / vmax) * g.vol.h;
+
+    // --- 网格与价格轴
+    ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textBaseline = 'middle';
+    const ticks = niceTicks(pmin, pmax, 5);
+    for (const p of ticks) {
+      if (p < pmin || p > pmax) continue;
+      const y = Math.round(yP(p)) + 0.5;
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(g.x, y); ctx.lineTo(g.x + g.plotW, y); ctx.stroke();
+      ctx.fillStyle = MUTED; ctx.textAlign = 'left';
+      ctx.fillText(p.toFixed(2), g.x + g.plotW + 6, y);
+    }
+    // 成交量轴
+    const vy = Math.round(g.vol.y) + 0.5;
+    ctx.strokeStyle = GRID; ctx.beginPath();
+    ctx.moveTo(g.x, vy); ctx.lineTo(g.x + g.plotW, vy); ctx.stroke();
+    ctx.fillStyle = MUTED; ctx.textAlign = 'left';
+    ctx.fillText(fmtVol(vmax), g.x + g.plotW + 6, g.vol.y + 8);
+
+    // --- 日期轴
+    const count = vt - vf + 1;
+    const stepX = Math.max(1, Math.ceil(count / Math.max(3, Math.floor(g.plotW / 78))));
+    ctx.textAlign = 'center';
+    for (let i = vt; i >= vf; i -= stepX) {
+      const x = this._x(i, g);
+      ctx.strokeStyle = GRID; ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, g.price.y); ctx.lineTo(Math.round(x) + 0.5, g.vol.y + g.vol.h); ctx.stroke();
+      ctx.fillStyle = MUTED;
+      ctx.fillText(fmtDate(bars.dates[i]).slice(5), x, this.H - 10);
+    }
+
+    // --- K 线
+    const cw = g.plotW / count;
+    const bodyW = Math.max(1, Math.min(24, cw * 0.66));
+    for (let i = vf; i <= vt; i++) {
+      const o = bars.open[i], c = bars.close[i], h = bars.high[i], lw = bars.low[i];
+      const up = c >= o;
+      const col = c > o ? UP : c < o ? DOWN : FLAT;
+      const x = this._x(i, g);
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, yP(h));
+      ctx.lineTo(Math.round(x) + 0.5, yP(lw));
+      ctx.stroke();
+      const yo = yP(o), yc = yP(c);
+      const top = Math.min(yo, yc);
+      const hgt = Math.max(1, Math.abs(yc - yo));
+      // A 股习惯：阳线红（空心感用淡填充），阴线绿实心
+      if (up) {
+        ctx.fillStyle = 'rgba(239,68,68,0.85)';
+        ctx.fillRect(x - bodyW / 2, top, bodyW, hgt);
+      } else {
+        ctx.fillStyle = 'rgba(34,197,94,0.95)';
+        ctx.fillRect(x - bodyW / 2, top, bodyW, hgt);
+      }
+    }
+
+    // --- 均线
+    if (this.showMA) {
+      ctx.lineWidth = 1.2;
+      this.ma.forEach((arr, k) => {
+        ctx.strokeStyle = MA_COLORS[k % MA_COLORS.length];
+        ctx.beginPath();
+        let started = false;
+        for (let i = vf; i <= vt; i++) {
+          const v = arr[i];
+          if (!isFinite(v)) { started = false; continue; }
+          const x = this._x(i, g), y = yP(v);
+          if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      });
+    }
+
+    // --- 成交量柱
+    for (let i = vf; i <= vt; i++) {
+      const up = bars.close[i] >= bars.open[i];
+      const x = this._x(i, g);
+      ctx.fillStyle = up ? 'rgba(239,68,68,0.55)' : 'rgba(34,197,94,0.55)';
+      const y = yV(bars.vol[i]);
+      ctx.fillRect(x - bodyW / 2, y, bodyW, g.vol.y + g.vol.h - y);
+    }
+
+    // --- 成本线
+    if (this.cost && this.cost >= pmin && this.cost <= pmax) {
+      const y = Math.round(yP(this.cost)) + 0.5;
+      ctx.save();
+      ctx.setLineDash([5, 4]); ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(g.x, y); ctx.lineTo(g.x + g.plotW, y); ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle = '#fbbf24'; ctx.textAlign = 'left';
+      ctx.fillText('成本 ' + this.cost.toFixed(2), g.x + 4, y - 8);
+    }
+
+    // --- 买卖标记
+    for (const m of this.marks) {
+      if (m.idx < vf || m.idx > vt) continue;
+      const x = this._x(m.idx, g);
+      const buy = m.side === 'buy';
+      const y = buy ? yP(bars.low[m.idx]) + 16 : yP(bars.high[m.idx]) - 16;
+      ctx.fillStyle = buy ? '#ef4444' : '#22c55e';
+      ctx.beginPath();
+      if (buy) { ctx.moveTo(x, y - 12); ctx.lineTo(x - 6, y); ctx.lineTo(x + 6, y); }
+      else { ctx.moveTo(x, y + 12); ctx.lineTo(x - 6, y); ctx.lineTo(x + 6, y); }
+      ctx.closePath(); ctx.fill();
+      ctx.font = 'bold 10px ui-sans-serif, system-ui';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = buy ? '#ef4444' : '#22c55e';
+      ctx.fillText(buy ? 'B' : 'S', x, buy ? y + 8 : y - 8);
+      ctx.fillStyle = 'rgba(226,232,240,0.9)';
+      ctx.fillText(m.price.toFixed(2), x, buy ? y + 19 : y - 19);
+      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    }
+
+    // --- 十字光标
+    if (this.hover != null && this.hover >= vf && this.hover <= vt) {
+      const i = this.hover;
+      const x = Math.round(this._x(i, g)) + 0.5;
+      ctx.save();
+      ctx.setLineDash([4, 4]); ctx.strokeStyle = CROSS; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, g.price.y); ctx.lineTo(x, g.vol.y + g.vol.h); ctx.stroke();
+      if (this.hoverY != null && this.hoverY > g.price.y && this.hoverY < g.price.y + g.price.h) {
+        const y = Math.round(this.hoverY) + 0.5;
+        ctx.beginPath(); ctx.moveTo(g.x, y); ctx.lineTo(g.x + g.plotW, y); ctx.stroke();
+        const p = pmax - (y - g.price.y) / g.price.h * (pmax - pmin);
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(g.x + g.plotW + 2, y - 8, 60, 16);
+        ctx.fillStyle = '#e2e8f0'; ctx.textAlign = 'left';
+        ctx.fillText(p.toFixed(2), g.x + g.plotW + 6, y);
+      }
+      ctx.restore();
+      this._tooltip(i, g, x);
+    }
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  _tooltip(i, g, x) {
+    const ctx = this.ctx, b = this.bars;
+    const prev = i > 0 ? b.close[i - 1] : b.open[i];
+    const chg = prev > 0 ? b.close[i] / prev - 1 : 0;
+    const up = b.close[i] >= b.open[i];
+    const lines = [
+      ['日期', fmtDate(b.dates[i])],
+      ['开盘', b.open[i].toFixed(2)],
+      ['最高', b.high[i].toFixed(2)],
+      ['最低', b.low[i].toFixed(2)],
+      ['收盘', b.close[i].toFixed(2)],
+      ['涨跌', (chg >= 0 ? '+' : '') + (chg * 100).toFixed(2) + '%'],
+      ['成交量', fmtVol(b.vol[i])],
+      ['成交额', fmtAmount(b.close[i] * b.vol[i]) + '元'],
+    ];
+    ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    const w = 118, lh = 15, h = lines.length * lh + 10;
+    let tx = x + 14;
+    if (tx + w > g.x + g.plotW) tx = x - w - 14;
+    const ty = g.price.y + 6;
+    ctx.fillStyle = 'rgba(15,23,42,0.94)';
+    ctx.strokeStyle = 'rgba(148,163,184,0.35)';
+    ctx.lineWidth = 1;
+    roundRect(ctx, tx, ty, w, h, 5); ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    lines.forEach(([k, v], n) => {
+      const y = ty + 5 + lh * n + lh / 2;
+      ctx.fillStyle = MUTED; ctx.fillText(k, tx + 8, y);
+      ctx.fillStyle = (k === '涨跌') ? (chg >= 0 ? UP : DOWN) : (k === '收盘' ? (up ? UP : DOWN) : TEXT);
+      ctx.fillText(v, tx + 52, y);
+    });
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  // ---- 交互 --------------------------------------------------------------
+  _bindEvents() {
+    const el = this.canvas;
+    el.style.touchAction = 'none';
+    el.addEventListener('wheel', e => {
+      if (!this.bars) return;
+      e.preventDefault();
+      const g = this._geom();
+      const rect = el.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const anchor = this._idxAt(px, g);
+      const count = this.viewTo - this.viewFrom + 1;
+      const ratio = (anchor - this.viewFrom) / Math.max(1, count - 1);
+      const next = Math.max(20, Math.min(this.limit + 1, Math.round(count * (e.deltaY > 0 ? 1.15 : 0.87))));
+      let from = Math.round(anchor - ratio * (next - 1));
+      this.setView(from, from + next - 1);
+      this.render();
+    }, { passive: false });
+
+    el.addEventListener('pointerdown', e => {
+      if (!this.bars) return;
+      el.setPointerCapture(e.pointerId);
+      this.drag = { x: e.clientX, from: this.viewFrom, to: this.viewTo, moved: false };
+    });
+    el.addEventListener('pointermove', e => {
+      if (!this.bars) return;
+      const rect = el.getBoundingClientRect();
+      const px = e.clientX - rect.left, py = e.clientY - rect.top;
+      if (this.drag) {
+        const g = this._geom();
+        const cw = g.plotW / (this.drag.to - this.drag.from + 1);
+        const d = Math.round((px - (this.drag.x - rect.left)) / cw);
+        if (Math.abs(e.clientX - this.drag.x) > 3) this.drag.moved = true;
+        if (this.drag.moved) {
+          const count = this.drag.to - this.drag.from + 1;
+          let from = this.drag.from - d;
+          from = Math.max(0, Math.min(from, this.limit + 1 - count));
+          this.setView(from, from + count - 1);
+        }
+      }
+      const g = this._geom();
+      this.hover = this._idxAt(px, g);
+      this.hoverY = py;
+      this.render();
+    });
+    const endDrag = () => { this.drag = null; };
+    el.addEventListener('pointerup', endDrag);
+    el.addEventListener('pointercancel', endDrag);
+    el.addEventListener('pointerleave', () => {
+      this.hover = null; this.hoverY = null; this.render();
+    });
+    el.addEventListener('dblclick', () => {
+      this.autoView(this.limit, 120);
+    });
+  }
+}
+
+function movingAverage(arr, period) {
+  const n = arr.length;
+  const out = new Float64Array(n).fill(NaN);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    sum += arr[i];
+    if (i >= period) sum -= arr[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}

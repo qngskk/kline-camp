@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>重生之K线股王 · K线训练营</title>
+<meta name="description" content="使用真实历史行情（前复权）逐日推演的 K 线交易训练营：随机股票 + 随机日期，次日开盘价成交，实时记录盈亏。">
+<link rel="stylesheet" href="css/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230f172a'/%3E%3Crect x='14' y='20' width='8' height='26' fill='%23ef4444'/%3E%3Crect x='28' y='14' width='8' height='34' fill='%2322c55e'/%3E%3Crect x='42' y='24' width='8' height='24' fill='%23ef4444'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">
+    <span class="logo">重生之K线股王</span>
+    <span class="tag">K 线训练营</span>
+  </div>
+  <div class="hud" id="hud">
+    <div class="hud-item"><label>当前日期</label><b id="hud-date">—</b></div>
+    <div class="hud-item"><label>总资产</label><b id="hud-equity">—</b></div>
+    <div class="hud-item"><label>收益率</label><b id="hud-return">—</b></div>
+    <div class="hud-item"><label>进度</label><b id="hud-progress">—</b></div>
+  </div>
+  <div class="top-actions">
+    <button id="btn-help" class="ghost">规则</button>
+    <button id="btn-restart" class="ghost">重新开始</button>
+  </div>
+</header>
+
+<main id="main">
+  <section id="chart-panel">
+    <div id="chart-head">
+      <span id="stock-label" class="pill">—</span>
+      <span id="period-label" class="pill">—</span>
+      <span class="spacer"></span>
+      <label class="chk"><input type="checkbox" id="chk-ma" checked> 均线</label>
+      <button class="mini" id="btn-zoom-out" title="缩小">－</button>
+      <button class="mini" id="btn-zoom-in" title="放大">＋</button>
+      <button class="mini" id="btn-reset-view" title="显示最后 120 根">复位</button>
+    </div>
+    <div id="chart-box"><canvas id="chart"></canvas></div>
+    <div id="chart-foot">
+      <span class="legend"><i class="dot" style="background:#ef4444"></i>涨 / 买入 <i class="dot" style="background:#22c55e"></i>跌 / 卖出</span>
+      <span class="legend"><i class="line" style="background:#f59e0b"></i>MA5 <i class="line" style="background:#38bdf8"></i>MA10 <i class="line" style="background:#c084fc"></i>MA20</span>
+      <span class="legend muted">滚轮缩放 · 拖拽平移 · 双击复位 · 悬停查看单根 K 线</span>
+    </div>
+  </section>
+
+  <aside id="side">
+    <div class="card">
+      <h3>持仓</h3>
+      <div class="kv-grid">
+        <div><label>总资产</label><b id="pos-equity">—</b></div>
+        <div><label>可用资金</label><b id="pos-cash">—</b></div>
+        <div><label>持仓市值</label><b id="pos-mv">—</b></div>
+        <div><label>浮动盈亏</label><b id="pos-float">—</b></div>
+        <div><label>持仓 / 成本</label><b id="pos-shares">—</b></div>
+        <div><label>累计收益率</label><b id="pos-return">—</b></div>
+      </div>
+      <div class="bar"><i id="pos-bar"></i></div>
+      <div class="hint" id="pos-hint">—</div>
+    </div>
+
+    <div class="card">
+      <h3>今日操作 <span class="sub" id="act-date"></span></h3>
+      <div class="btn-row">
+        <button class="act buy" id="btn-buy">买入</button>
+        <button class="act sell" id="btn-sell">卖出全部</button>
+      </div>
+      <div class="btn-row">
+        <button class="act hold" id="btn-hold">观望 / 下一日</button>
+      </div>
+      <div class="btn-row">
+        <button class="act end" id="btn-end">结束交易并结算</button>
+      </div>
+      <div class="hint">成交价 = <b>次日开盘价</b>；涨停开盘买不进、跌停开盘卖不出。</div>
+    </div>
+
+    <div class="card grow">
+      <h3>成交流水</h3>
+      <div id="log-list" class="log-list"><div class="empty">还没有成交</div></div>
+    </div>
+  </aside>
+</main>
+
+<!-- 设置 -->
+<div class="modal" id="modal-setup">
+  <div class="dialog">
+    <h2>开始新一轮训练</h2>
+    <div class="field">
+      <label class="flabel">股票</label>
+      <div class="seg" id="seg-mode">
+        <button data-mode="random" class="on">随机股票</button>
+        <button data-mode="pick">指定代码</button>
+      </div>
+      <div id="pick-box" class="hidden">
+        <input id="pick-input" type="text" placeholder="输入代码或名称，如 600519 / 贵州茅台" autocomplete="off">
+        <div id="pick-list" class="suggest"></div>
+      </div>
+      <div class="hint" id="pool-hint">—</div>
+    </div>
+    <div class="field">
+      <label class="flabel">仓位（每次买入动用总资产的比例）</label>
+      <div class="seg" id="seg-pos">
+        <button data-pos="1" class="on">满仓</button>
+        <button data-pos="0.5">1/2</button>
+        <button data-pos="0.3333333333">1/3</button>
+        <button data-pos="0.25">1/4</button>
+      </div>
+    </div>
+    <div class="field">
+      <label class="flabel">操作交易日</label>
+      <div class="seg" id="seg-horizon">
+        <button data-h="30" class="on">30 日</button>
+        <button data-h="60">60 日</button>
+        <button data-h="90">90 日</button>
+      </div>
+      <div class="hint">随机日期之后必须留有足够的交易日，因此 90 日的可选日期范围会明显窄于 30 日。</div>
+    </div>
+    <div class="field two">
+      <div>
+        <label class="flabel">初始资金（元）</label>
+        <input id="inp-capital" type="number" value="100000" min="10000" step="10000">
+      </div>
+      <div>
+        <label class="flabel">交易费用</label>
+        <label class="chk big"><input type="checkbox" id="chk-fee" checked> 计入佣金/印花税</label>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <span class="err" id="setup-err"></span>
+      <button class="primary" id="btn-start">开始训练</button>
+    </div>
+  </div>
+</div>
+
+<!-- 确认 -->
+<div class="modal hidden" id="modal-confirm">
+  <div class="dialog small">
+    <h2 id="cf-title">确认</h2>
+    <div id="cf-body" class="cf-body"></div>
+    <div id="cf-pos" class="field hidden">
+      <label class="flabel">买入仓位</label>
+      <div class="seg" id="seg-pos2">
+        <button data-pos="1">满仓</button>
+        <button data-pos="0.5">1/2</button>
+        <button data-pos="0.3333333333">1/3</button>
+        <button data-pos="0.25">1/4</button>
+      </div>
+    </div>
+    <div class="dialog-actions">
+      <button class="ghost" id="cf-cancel">取消</button>
+      <button class="primary" id="cf-ok">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 规则 -->
+<div class="modal hidden" id="modal-help">
+  <div class="dialog">
+    <h2>训练规则</h2>
+    <ol class="rules">
+      <li>标的来自本地通达信日线，价格已做<b>前复权</b>（除权除息缺口被抹平，最新价不变）。</li>
+      <li>随机抽一只股票 + 一个随机日期，日期保证<b>之前有 3 个月 K 线、之后至少还有整个操作窗口</b>。</li>
+      <li>每一轮你只能看到「已揭示」的 K 线，<b>决策不得使用未来数据</b>。</li>
+      <li>买入 / 卖出 / 结束交易清仓，<b>一律以次日开盘价成交</b>；观望则直接进入下一日。</li>
+      <li>仓位 = 本次买入动用当前总资产的比例（满仓 / 1/2 / 1/3 / 1/4），按一手 100 股向下取整。</li>
+      <li>涨停开盘无法买入、跌停开盘无法卖出（主板 ±10%，创业板/科创板 ±20%）。</li>
+      <li>操作满 30 / 60 / 90 个交易日后自动结算，剩余持仓按最后一日收盘价折算。</li>
+      <li>已剔除现行 ST 股、上市不足 250 个交易日的次新股、北交所与 B 股。</li>
+    </ol>
+    <div class="dialog-actions"><button class="primary" id="help-ok">知道了</button></div>
+  </div>
+</div>
+
+<!-- 结果 -->
+<div class="modal hidden" id="modal-result">
+  <div class="dialog">
+    <h2 id="rs-title">训练结算</h2>
+    <div class="reveal" id="rs-stock"></div>
+    <div class="big-return" id="rs-return">—</div>
+    <div class="big-sub" id="rs-sub">—</div>
+    <div class="stat-grid" id="rs-stats"></div>
+    <div class="dialog-actions">
+      <button class="ghost" id="rs-view">查看 K 线</button>
+      <button class="primary" id="rs-again">再来一局</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
