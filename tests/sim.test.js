@@ -500,6 +500,82 @@ test('成交流水带成交后快照，且与账目自洽', () => {
   }
 });
 
+test('空仓换股：账目/已用交易日/结束日都不变，可无限次', () => {
+  const bars = makeBars(220, { seed: 11 });
+  const bars2 = makeBars(220, { seed: 22, price0: 20 });
+  bars2.dates.set(bars.dates);                    // 让两只标的共用同一个交易日历
+  const STOCK2 = { code: 'sz000001', name: '新标的', boardIdx: 1 };
+
+  const s = closeSession(bars, { fees: true });
+  s.order('add', 0.5); s.nextDay();               // 建仓
+  s.order('clear'); s.nextDay();                  // 清仓 → 空仓，day=2
+  const cash = s.cash, realized = s.realized, fee = s.totalFee;
+  const day = s.day, endDate = s.endDate;
+
+  const r = s.switchStock({ bars: bars2, stock: STOCK2, curIdx: s.cur });
+  assert.equal(r.ok, true);
+  assert.equal(r.count, 1);
+  assert.equal(s.cash, cash, '现金不变');
+  assert.equal(s.realized, realized, '已实现盈亏不变');
+  assert.equal(s.totalFee, fee, '累计费用不变');
+  assert.equal(s.day, day, '已用交易日不变');
+  assert.equal(s.endDate, endDate, '结束交易日不变');
+  assert.equal(s.bars, bars2, '已切到新标的');
+  assert.equal(s.stock.code, 'sz000001');
+  assert.equal(s.boardIdx, 1, '涨跌停口径跟着换板块');
+  assert.equal(s.shares, 0);
+  assert.equal(s.marks.length, 0, '旧标的的买卖标记应清空');
+  assert.equal(s.switches.length, 1);
+
+  // 可以继续在新标的上交易到结束日
+  assert.equal(s.order('add', 0.5).ok, true);
+  let guard = 0;
+  while (!s.finished && guard++ < 200) s.nextDay();
+  assert.equal(s.finished, true);
+  assert.ok(Math.abs(s.equity - s.cash) < 1e-9);
+  assert.equal(s.dates_end_check ?? s.bars.dates[s.cur], s.bars.dates[s.cur]);
+  assert.equal(s.bars.dates[s.cur], endDate, '应在同一个结束交易日结算');
+  assert.equal(s.summary().switches, 1);
+
+  // 无限次：清仓后可以再换
+  const s2 = closeSession(bars, { fees: true });
+  for (let i = 0; i < 5; i++) {
+    const t = i % 2 ? bars : bars2;
+    const st = i % 2 ? STOCK : STOCK2;
+    const rr = s2.switchStock({ bars: t, stock: st, curIdx: s2.cur });
+    assert.equal(rr.ok, true, `第 ${i + 1} 次换股应成功`);
+    assert.equal(rr.count, i + 1);
+  }
+  assert.equal(s2.switches.length, 5);
+});
+
+test('有持仓 / 已无剩余交易日 时不能换股', () => {
+  const bars = makeBars(220, { seed: 11 });
+  const bars2 = makeBars(220, { seed: 22 }); bars2.dates.set(bars.dates);
+  const STOCK2 = { code: 'sz000001', name: '新标的', boardIdx: 1 };
+  const s = closeSession(bars);
+  s.order('add', 0.5); s.nextDay();
+  assert.ok(s.shares > 0);
+  assert.equal(s.switchStock({ bars: bars2, stock: STOCK2, curIdx: s.cur }).ok, false, '有持仓不能换');
+  // 清仓后走到最后一日的次日（已无可操作交易日）
+  s.order('clear'); s.nextDay();
+  while (s.canAct) s.nextDay();
+  assert.equal(s.switchStock({ bars: bars2, stock: STOCK2, curIdx: s.cur }).ok, false, '没剩余交易日不能换');
+});
+
+test('换股会作废旧标的的未成交委托', () => {
+  const bars = makeBars(220, { seed: 11 });
+  const bars2 = makeBars(220, { seed: 22 }); bars2.dates.set(bars.dates);
+  const s = closeSession(bars);
+  s.order('add', 0.5);
+  assert.equal(s.pending.length, 1);
+  s.switchStock({ bars: bars2, stock: { code: 'sz000001', name: 'X', boardIdx: 0 }, curIdx: s.cur });
+  assert.equal(s.pending.length, 0, '委托篮应清空');
+  assert.equal(s.shares, 0);
+  const n = s.nextDay();
+  assert.equal(n.fills.length, 0, '旧委托不应在新标的上成交');
+});
+
 test('费用会真实侵蚀收益', () => {
   const bars = makeBars();
   const a = closeSession(bars, { fees: false });

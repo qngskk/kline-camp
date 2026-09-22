@@ -6,7 +6,7 @@
  *   → 点「进入下一日」揭示 bar[cur+1] → 严格模式此时按开盘价成交委托篮 → 循环
  */
 import { decodeKLC, fmtDate } from './decode.js';
-import { Session, BOARDS, FILL_MODES, eligibleRange, pickStartIndex } from './sim.js';
+import { Session, BOARDS, FILL_MODES, PRE_BARS, eligibleRange, pickStartIndex } from './sim.js';
 import { KChart } from './chart.js';
 
 const $ = sel => document.getElementById(sel[0] === '#' ? sel.slice(1) : sel);
@@ -78,6 +78,32 @@ async function loadIndex() {
     ({ code, name, boardIdx, n, prior, iFrom, iTo }));
   state.meta = idx;
   state.loaded = true;
+}
+
+/** 基准指数（沪深300）：bench.json 在启动时加载一次 */
+async function loadBench() {
+  try {
+    const res = await fetch('data/bench.json', { cache: 'no-cache' });
+    if (!res.ok) return;
+    const b = await res.json();
+    const map = new Map();
+    b.dates.forEach((d, i) => map.set(d, b.close[i]));
+    state.bench = { name: b.name, code: b.code, map, dates: b.dates, close: b.close };
+  } catch (e) { /* 基准拿不到就不显示，不影响训练 */ }
+}
+
+/** 基准指数在 [from, to] 两个交易日之间的涨跌幅 */
+function benchChange(from, to) {
+  const b = state.bench;
+  if (!b) return null;
+  const at = d => {                       // 指数每天都有数据，找不到就往前找最近一天
+    if (b.map.has(d)) return { d, v: b.map.get(d) };
+    for (let i = b.dates.length - 1; i >= 0; i--) if (b.dates[i] <= d) return { d: b.dates[i], v: b.close[i] };
+    return null;
+  };
+  const a = at(from), z = at(to);
+  if (!a || !z || !a.v) return null;
+  return { name: b.name, code: b.code, d0: a.d, p0: a.v, d1: z.d, p1: z.v, pct: z.v / a.v - 1 };
 }
 
 async function loadBars(code) {
@@ -241,6 +267,7 @@ function renderAll(fit = false) {
   $('act-sellable').className = sellable <= 0 ? 'down' : '';
   $('btn-next').disabled = !canAct;
   $('btn-end').disabled = s.finished;
+  $('btn-switch').disabled = !canAct || s.shares > 0;
 
   const pend = $('pending-box');
   if (s.pending.length) {
@@ -349,6 +376,44 @@ function doNext() {
   if (s.finished) setTimeout(showResult, 420);
 }
 
+/** 在指定日期上随机找一只「当天有交易、且到本局结束日还有行情」的新标的 */
+async function rollStockOnDate(date, endDate, excludeCode) {
+  const cands = candidatesFor(state.horizon).list;
+  for (let k = 0; k < 24; k++) {
+    const c = cands[Math.floor(Math.random() * cands.length)];
+    if (c.s.code === excludeCode) continue;
+    const bars = await loadBars(c.s.code);
+    const i = bars.dates.indexOf(date);
+    if (i < PRE_BARS || i < 0) continue;            // 当天停牌 / 未上市 / 前置 K 线不足
+    let j = i;
+    for (let t = i; t < bars.n; t++) { if (bars.dates[t] > endDate) break; j = t; }
+    if (j <= i) continue;                            // 到结束日之前没有行情
+    return { bars, stock: { code: c.s.code, name: c.s.name, boardIdx: c.s.boardIdx }, cur: i };
+  }
+  return null;
+}
+
+function doSwitch() {
+  const s = state.session;
+  if (!s || !s.canAct || s.shares > 0) return;
+  const btn = $('btn-switch');
+  btn.disabled = true; btn.textContent = '换股中…';
+  rollStockOnDate(s.date, s.endDate, s.stock.code).then(pick => {
+    btn.disabled = false; btn.textContent = '换一只股票';
+    if (!pick) { toast('没抽到合适的新标的，再点一次试试', 'warn', 2600); return; }
+    const dropped = s.pending.length;
+    const r = s.switchStock({ bars: pick.bars, stock: pick.stock, curIdx: pick.cur });
+    if (!r.ok) { toast(r.msg, 'warn'); return; }
+    renderAll(true);
+    toast(`已换到新标的（本局第 ${r.count} 次）` +
+          (dropped ? `，放弃了 ${dropped} 笔委托` : '') +
+          `；仍是 ${fmtDate(s.date)}，还剩 ${s.daysLeft} 个交易日`, 'info', 3200);
+  }).catch(e => {
+    btn.disabled = false; btn.textContent = '换一只股票';
+    toast('换股失败：' + (e.message || e), 'warn', 3200);
+  });
+}
+
 function doEnd() {
   const s = state.session;
   if (!s || s.finished) return;
@@ -412,39 +477,30 @@ function fillResult(s, r) {
     ['已实现盈亏', `${r.realized >= 0 ? '+' : ''}${money(r.realized)} 元`],
     ['交易费用', money(r.totalFee) + ' 元'],
     ['成交口径', r.fillModeLabel],
+    ['中途换股', r.switches ? `${r.switches} 次` : '无'],
     ['结算方式', r.settleReason === 'horizon' ? '操作期满自动结算' : '手动结束交易'],
     ['剩余持仓', r.holding ? '有（已折算）' : '无'],
   ];
   $('rs-stats').innerHTML = rows.map(([k, v]) =>
-    `<div><label>${k}</label><b class="${k.startsWith('本股区间') ? cls(r.benchmarkPct) : k === '满仓持有 次开→收' ? cls(r.buyHoldPct) : k === '跑赢满仓持有' ? cls(r.returnPct - r.buyHoldPct) : ''}">${v}</b></div>`).join('');
+    `<div><label>${k}</label><b>${v}</b></div>`).join('');
 
-  // 对比基准单独一块渲染：把「买在哪、卖在哪」的价格与日期直接写出来，
-  // 避免「同期个股」「收→收」这类缩写被误读成指数或看不懂
-  const c0 = s.bars.close[s.startIdx], o1 = s.bars.open[Math.min(s.startIdx + 1, s.bars.n - 1)];
-  const c1 = s.price;
-  const gap = o1 / c0 - 1;
-  const brow = (name, how, pctVal, cls2, note) =>
-    `<div class="bench-row">` +
-      `<span class="bn">${name}</span>` +
-      `<span class="bf">${how}</span>` +
-      `<b class="bv ${cls2}">${dd(pctVal)}</b>` +
-      (note ? `<span class="bt">${note}</span>` : '') +
-    `</div>`;
-  $('rs-bench').innerHTML =
-    `<div class="bench-cap">对比基准 —— 都是<b>你训练的这一只股票</b>（前复权、含分红），不是指数</div>` +
-    brow('本股区间涨跌',
-         `随机日 ${fmtDate(r.startDate)} 收盘 <b>${c0.toFixed(2)}</b> → 末日 ${fmtDate(r.endDate)} 收盘 <b>${c1.toFixed(2)}</b>`,
-         r.benchmarkPct, cls(r.benchmarkPct), '这段行情本身涨了多少（中性参照，与你的操作无关）') +
-    brow('满仓持有',
-         `随机日<b>次日开盘</b> <b>${o1.toFixed(2)}</b>（你最早能买到的价格）→ 末日收盘 <b>${c1.toFixed(2)}</b>`,
-         r.buyHoldPct, cls(r.buyHoldPct), '若在最早能买到的价格满仓买入并一直拿到最后一天') +
-    brow('跑赢满仓持有', `你的收益率 ${pct(r.returnPct)} − 满仓持有 ${dd(r.buyHoldPct)}`,
-         r.returnPct - r.buyHoldPct, cls(r.returnPct - r.buyHoldPct), '');
-  $('rs-bench').insertAdjacentHTML('beforeend',
-    `<div class="bench-foot">两者相差 ${gap >= 0 ? '+' : ''}${(gap * 100).toFixed(2)}% —— ` +
-    `这是随机日收盘 → 次日开盘的<b>隔夜跳空</b>；` +
-    (gap < 0 ? '次日低开，所以「满仓持有」的起点更低、涨幅更大。' : '次日高开，所以「满仓持有」的起点更高、涨幅更小。') +
-    `</div>`);
+  // 对比基准：沪深300（宽基指数），不再用"随机全仓买入"那套
+  const bc = benchChange(r.startDate, r.endDate);
+  $('rs-bench').innerHTML = bc
+    ? `<div class="bench-cap">对比基准 —— <b>沪深300</b>（sh000300，宽基指数）同期涨跌</div>` +
+      `<div class="bench-row">` +
+        `<span class="bn">沪深300</span>` +
+        `<span class="bf">${fmtDate(bc.d0)} 收盘 <b>${bc.p0.toFixed(2)}</b> → ` +
+        `${fmtDate(bc.d1)} 收盘 <b>${bc.p1.toFixed(2)}</b></span>` +
+        `<b class="bv ${cls(bc.pct)}">${dd(bc.pct)}</b>` +
+        `<span class="bt">同期大盘涨跌，与你怎么操作无关</span>` +
+      `</div>` +
+      `<div class="bench-row">` +
+        `<span class="bn">跑赢沪深300</span>` +
+        `<span class="bf">你的收益率 ${pct(r.returnPct)} − 沪深300 ${dd(bc.pct)}</span>` +
+        `<b class="bv ${cls(r.returnPct - bc.pct)}">${dd(r.returnPct - bc.pct)}</b>` +
+      `</div>`
+    : `<div class="bench-cap">对比基准：沪深300 数据未加载（不影响训练结果）</div>`;
   refreshStockLabel();
 }
 
@@ -477,14 +533,16 @@ function renderTrades() {
   const sign = x => (x >= 0 ? '+' : '') + money2(x);
   const rows = tdRows();
 
-  const head = ['#', '日期', '操作', '成交价', '股数', '成交额', '费用', '盈亏', '盈亏%',
-                '成交后持仓', '成本价', '成交后总资产', '收益率'];
+  const multi = new Set(s.log.map(t => t.code)).size > 1;
+  const head = ['#', '日期', ...(multi ? ['标的'] : []), '操作', '成交价', '股数', '成交额', '费用',
+                '盈亏', '盈亏%', '成交后持仓', '成本价', '成交后总资产', '收益率'];
   const body = rows.map((t, i) => {
     const pnlCls = t.pnl == null ? '' : t.pnl >= 0 ? 'up' : 'down';
     const retCls = cls(t.returnAfter);
     return `<tr class="${t.side}">` +
       `<td>${i + 1}</td>` +
       `<td>${fmtDate(t.date)}</td>` +
+      (multi ? `<td>${(t.code || '').toUpperCase()}</td>` : '') +
       `<td>${t.label || t.side}</td>` +
       `<td>${t.price.toFixed(2)}</td>` +
       `<td>${t.shares.toLocaleString('zh-CN')}</td>` +
@@ -525,11 +583,13 @@ function exportTradesCsv() {
     const t = v == null ? '' : String(v);
     return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
   };
-  const head = ['序号', '日期', '方向', '操作', '成交价', '股数', '成交额', '费用', '盈亏', '盈亏%',
-                '成交后持仓', '成本价', '成交后总资产', '收益率'];
+  const multi = new Set(s.log.map(t => t.code)).size > 1;
+  const head = ['序号', '日期', ...(multi ? ['标的'] : []), '方向', '操作', '成交价', '股数', '成交额',
+                '费用', '盈亏', '盈亏%', '成交后持仓', '成本价', '成交后总资产', '收益率'];
   const lines = [head.join(',')];
   rows.forEach((t, i) => lines.push([
-    i + 1, t.date, t.side === 'buy' ? '买入' : t.side === 'settle' ? '结算卖出' : '卖出',
+    i + 1, t.date, ...(multi ? [t.code || ''] : []),
+    t.side === 'buy' ? '买入' : t.side === 'settle' ? '结算卖出' : '卖出',
     t.label || '', t.price.toFixed(2), t.shares, t.amount.toFixed(2), t.fee.toFixed(2),
     t.pnl == null ? '' : t.pnl.toFixed(2),
     t.pnlPct == null ? '' : (t.pnlPct * 100).toFixed(2) + '%',
@@ -620,6 +680,7 @@ function bind() {
   });
 
   $('btn-next').addEventListener('click', doNext);
+  $('btn-switch').addEventListener('click', doSwitch);
   $('btn-end').addEventListener('click', doEnd);
   $('btn-restart').addEventListener('click', () => { hide('#modal-result'); show('#modal-setup'); updatePoolHint(); });
   $('btn-help').addEventListener('click', () => show('#modal-help'));
@@ -716,6 +777,7 @@ async function init() {
   updateFillHint();
   try {
     await loadIndex();
+    await loadBench();
     $('pool-hint').textContent = '正在统计样本池…';
     updatePoolHint();
   } catch (e) {

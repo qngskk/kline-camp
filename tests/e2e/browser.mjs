@@ -407,6 +407,48 @@ check(/清仓|卖|结算/.test(end.log), '结束交易没有清仓流水');
 console.log('   ', JSON.stringify(end));
 await shot('08-end');
 
+console.log('9b. 空仓换股（无限次）+ 沪深300 基准');
+await page.click('#rs-view');
+await page.click('#btn-restart');
+await page.waitForSelector('#modal-setup:not(.hidden)');
+await page.click('#seg-horizon button[data-h="30"]');
+await page.click('#seg-mode button[data-mode="random"]');
+await startSession();
+const codeOf = () => page.evaluate(() => window.__kline.session.stock.code);
+const dateOf = () => page.evaluate(() => window.__kline.session.date);
+check(await page.$eval('#btn-switch', el => !el.disabled), '空仓时应能换股');
+const swDate = await dateOf();
+const codes = new Set();
+for (let i = 0; i < 3; i++) { await page.click('#btn-switch'); await wait(650); codes.add(await codeOf()); }
+console.log('   连点 3 次换股，出现标的:', [...codes].join(', '));
+check(codes.size >= 2, '连点换股应换到不同标的');
+check((await dateOf()) === swDate, '换股后日期不应改变');
+check((await page.evaluate(() => window.__kline.session.switches.length)) === 3, '换股次数应为 3');
+check((await text('#hud-progress')).startsWith('0 /'), '换股不应消耗交易日');
+check((await page.evaluate(() => window.__kline.session.shares)) === 0, '换股不应产生持仓');
+await clickAdd('0.25'); await wait(150);
+await page.click('#btn-next'); await wait(550);
+check(await page.$eval('#btn-switch', el => el.disabled), '有持仓时应禁止换股');
+await clickReduce('1'); await wait(150);
+await page.click('#btn-next'); await wait(550);
+check(await page.$eval('#btn-switch', el => !el.disabled), '清仓后应恢复可换股');
+await page.click('#btn-switch'); await wait(700);
+check((await page.evaluate(() => window.__kline.session.switches.length)) === 4, '清仓后应能再次换股');
+for (let i = 0; i < 40; i++) {
+  if (await page.evaluate(() => !document.getElementById('modal-result').classList.contains('hidden'))) break;
+  if (await page.evaluate(() => document.getElementById('btn-next').disabled)) break;
+  await page.click('#btn-next'); await wait(40);
+}
+await page.waitForSelector('#modal-result:not(.hidden)', { timeout: 15000 });
+await wait(400);
+const bench = await text('#rs-bench');
+console.log('   基准区:', bench.replace(/\s+/g, ' ').slice(0, 120));
+check(/沪深300/.test(bench), '结算面板应显示沪深300基准');
+check(/跑赢沪深300/.test(bench), '应显示跑赢沪深300');
+check(!/本股区间|满仓持有/.test(bench), '旧的"随机全仓买入"两个基准应已删除');
+check(/中途换股\s*4 次/.test((await text('#rs-stats')).replace(/\s+/g, ' ')), '摘要应显示换股次数');
+await shot('13-switch');
+
 console.log('10. 移动端布局');
 await page.click('#rs-view');
 await page.click('#btn-restart');

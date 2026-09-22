@@ -137,7 +137,9 @@ export class Session {
 
     this.cur = startIdx;
     this.lastIdx = Math.min(startIdx + horizon, bars.n - 1);
+    this.endDate = bars.dates[this.lastIdx];   // 本局固定的结束交易日（换股后不变）
     this.day = 0;
+    this.switches = [];                        // 空仓换股记录 [{date, from, to}]
 
     this.cash = capital;
     this.shares = 0;
@@ -180,15 +182,6 @@ export class Session {
   get queuedSellShares() { return this.pending.filter(o => o.side === 'sell').reduce((a, o) => a + o.shares, 0); }
   get canAct() { return !this.finished && this.day < this.horizon && this.cur < this.lastIdx; }
   get nextDate() { return this.cur < this.lastIdx ? this.bars.dates[this.cur + 1] : null; }
-  /** 同期个股涨跌：从「随机日期收盘」到最后一日收盘（中性市场参照） */
-  get benchmarkPct() { return this.price / this.bars.close[this.startIdx] - 1; }
-  /** 满仓持有收益：用玩家能成交的第一个价格（随机日次日开盘）买入并持有，
-   *  这才是与玩家收益率 apples-to-apples 的基准 */
-  get buyHoldPct() {
-    const i = Math.min(this.startIdx + 1, this.bars.n - 1);
-    const p0 = this.bars.open[i];
-    return p0 > 0 ? this.price / p0 - 1 : 0;
-  }
   get progress() { return this.day / this.horizon; }
   get daysLeft() { return Math.max(0, this.horizon - this.day); }
   get fillModeLabel() { return (FILL_MODES.find(m => m.v === this.fillMode) || FILL_MODES[0]).label; }
@@ -354,7 +347,7 @@ export class Session {
       this.totalFee += c.fee;
       const fill = { seq: order.id || ++this._seq, side: 'buy', label: order.label, date, price,
                      shares, amount: c.gross, fee: c.fee, total: c.total, idx,
-                     ...this._snapAfter(price) };
+                     code: this.stock.code, ...this._snapAfter(price) };
       this.log.push(fill);
       this.marks.push({ idx, side: 'buy', price, seq: fill.seq });
       this.events.push({ date, type: 'buy', text: `${order.label}：买入 ${shares} 股 @ ${price.toFixed(2)}` });
@@ -386,7 +379,8 @@ export class Session {
     this.totalFee += s.fee + s.tax;
     const fill = { seq: order.id || ++this._seq, side: 'sell', label: order.label, date, price,
                    shares: sh, amount: s.gross, fee: s.fee + s.tax, total: s.net,
-                   pnl, pnlPct: cost > 0 ? pnl / cost : 0, idx, ...this._snapAfter(price) };
+                   pnl, pnlPct: cost > 0 ? pnl / cost : 0, idx, code: this.stock.code,
+                   ...this._snapAfter(price) };
     this.log.push(fill);
     this.marks.push({ idx, side: 'sell', price, seq: fill.seq });
     this.events.push({ date, type: 'sell',
@@ -418,6 +412,32 @@ export class Session {
     return { ok: true, settled: this.settle('manual') };
   }
 
+  /** 空仓换股：把本局切到另一只标的，账目与已用交易日不变，结束交易日也不变。
+   *  只有空仓时允许（有持仓换股等于凭空换标的，不合理）。 */
+  switchStock({ bars, stock, curIdx }) {
+    if (this.shares > 0) return { ok: false, msg: '有持仓时不能换股' };
+    if (!this.canAct) return { ok: false, msg: '本轮已无剩余交易日' };
+    const from = { code: this.stock.code, name: this.stock.name };
+    this.bars = bars;
+    this.stock = stock;
+    this.boardIdx = stock.boardIdx ?? 0;
+    this.cur = curIdx;
+    this.startIdx = curIdx;                       // 换股后以当前日为新的起点
+    // 结束交易日保持不变：在新标的里找 <= endDate 的最后一根
+    let j = curIdx;
+    for (let i = curIdx; i < bars.n; i++) {
+      if (bars.dates[i] > this.endDate) break;
+      j = i;
+    }
+    this.lastIdx = Math.max(curIdx + 1, j);
+    this.pending = [];                            // 旧标的的未成交委托作废
+    this.boughtToday = 0;
+    this.marks = [];                              // 旧标的的买卖标记不再适用
+    this.switches.push({ date: bars.dates[curIdx], from: from.code, to: stock.code,
+                         fromName: from.name, toName: stock.name });
+    return { ok: true, count: this.switches.length };
+  }
+
   /** 结算：按当前（最后一日）收盘价把剩余持仓折算为现金 */
   settle(reason) {
     if (this.finished) return false;
@@ -436,7 +456,7 @@ export class Session {
       const fill = { seq: ++this._seq, side: 'settle', label: '结算', date: this.bars.dates[this.cur],
                      price: px, shares: sh0, amount: s.gross, fee: s.fee + s.tax,
                      total: s.net, pnl, pnlPct: cost0 > 0 ? pnl / cost0 : 0,
-                     idx: this.cur, ...this._snapAfter(px) };
+                     idx: this.cur, code: this.stock.code, ...this._snapAfter(px) };
       this.log.push(fill);
       this.marks.push({ idx: this.cur, side: 'sell', price: px, seq: fill.seq, settle: true });
       this.events.push({ date: this.bars.dates[this.cur], type: 'settle',
@@ -489,9 +509,8 @@ export class Session {
       losses: this.losses,
       winRate: this.wins + this.losses > 0 ? this.wins / (this.wins + this.losses) : null,
       maxDrawdown: this.maxDrawdown,
-      benchmarkPct: this.benchmarkPct,
-      buyHoldPct: this.buyHoldPct,
       holding: this.shares > 0,
+      switches: this.switches.length,
       settleReason: this.settleReason,
     };
   }

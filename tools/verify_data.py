@@ -118,6 +118,11 @@ def main(n_sample=300):
         raw = read_day_raw(code)
         if raw.size == 0:
             continue
+        # 与构建脚本口径对齐：构建时本地数据最新只到 WINDOW_TO，
+        # 之后（本地数据又更新了几天）才出现的除权日不应反过来影响已发布的数据。
+        # 这里把原始序列截到 WINDOW_TO，除权日落在其后的会被 factor_series 自动跳过。
+        _k = int(np.searchsorted(raw["date"].astype("i8"), win[1], side="right"))
+        raw = raw[:_k]
         # 注意：.day 里的价格是「分」，派现/配股价是「元」，必须统一成元再套公式
         fac = factor_series(raw["date"].astype("i8"), raw["close"].astype("f8") / 100.0,
                             events.get((1 if code[:2] == "sh" else 0, code[2:]), []))

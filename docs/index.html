@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>重生之K线股王 · K线训练营</title>
 <meta name="description" content="使用真实历史行情（前复权）逐日推演的 K 线交易训练营：随机股票 + 随机日期，次日开盘价成交，实时记录盈亏。">
-<link rel="stylesheet" href="css/app.css?v=20260921c">
+<link rel="stylesheet" href="css/app.css?v=20260922a">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230f172a'/%3E%3Crect x='14' y='20' width='8' height='26' fill='%23ef4444'/%3E%3Crect x='28' y='14' width='8' height='34' fill='%2322c55e'/%3E%3Crect x='42' y='24' width='8' height='24' fill='%23ef4444'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -90,6 +90,9 @@
       </div>
       <div class="btn-row">
         <button class="act hold" id="btn-next">进入下一日</button>
+      </div>
+      <div class="btn-row">
+        <button class="act switch" id="btn-switch">换一只股票</button>
       </div>
       <div class="btn-row">
         <button class="act end" id="btn-end">结束交易并结算</button>
@@ -200,8 +203,9 @@
       <li>成交价触及涨停买不进、触及跌停卖不出（主板 ±10%，创业板/科创板 ±20%）。</li>
       <li>操作满 30 / 60 / 90 个交易日后自动结算，剩余持仓按最后一日收盘价折算。</li>
       <li>「结束交易」：尾盘模式按当收即时清仓；次日开盘价模式放弃今日委托、按次日开盘价清仓。</li>
-      <li>结算时的对比基准是<b>你训练的这一只股票本身</b>（不是指数）：
-        「本股区间涨跌」= 随机日收盘 → 末日收盘；「满仓持有」= 次日开盘（你最早能买到的价格）→ 末日收盘。</li>
+      <li><b>空仓换股</b>：未持股、且还有剩余交易日时，可以<b>无限次</b>点「换一只股票」换标的；
+        换股后日期不变、已用交易日不变、本局结束日不变，旧标的的未成交委托会作废。</li>
+      <li>结算时的对比基准是 <b>沪深300 指数</b>在该区间的涨跌幅（「跑赢沪深300」= 你的收益率 − 指数涨幅）。</li>
       <li>已剔除现行 ST 股、上市不足 250 个交易日的次新股、北交所与 B 股。</li>
     </ol>
     <div class="dialog-actions"><button class="primary" id="help-ok">知道了</button></div>
@@ -245,6 +249,6 @@
   </div>
 </div>
 
-<script type="module" src="js/app.js?v=20260921c"></script>
+<script type="module" src="js/app.js?v=20260922a"></script>
 </body>
 </html>

@@ -162,6 +162,7 @@ b { font-variant-numeric: tabular-nums; }
 .act.sell { background: linear-gradient(180deg, #16a34a, #15803d); border-color: #22c55e; }
 .act.hold { background: var(--panel2); color: var(--text); }
 .act.end { background: transparent; color: var(--gold); border-color: rgba(251,191,36,.45); font-size: 13px; padding: 8px; }
+.act.switch { background: transparent; color: var(--accent); border-color: rgba(56,189,248,.42); font-size: 13px; padding: 9px; }
 .act:disabled { opacity: .38; cursor: not-allowed; filter: grayscale(.6); }
 .act:not(:disabled):hover { filter: brightness(1.12); }
 .log-list { flex: 1 1 auto; overflow-y: auto; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }

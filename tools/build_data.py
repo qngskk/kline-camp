@@ -141,15 +141,43 @@ def decode_pack(raw: bytes) -> dict:
     }
 
 
+def build_bench(out_dir: str, index_code: str = "sh000300"):
+    """导出基准指数（默认沪深300）在窗口内的日收盘，供结算面板做「同期大盘」对照。
+
+    指数不需要复权，直接取原始收盘。
+    """
+    rec = tdx.read_day(index_code, start=WINDOW_FROM, end=WINDOW_TO)
+    if rec.size == 0:
+        print(f"      [warn] 找不到基准指数 {index_code}，跳过")
+        return None
+    obj = {
+        "code": index_code,
+        "name": "沪深300",
+        "from": int(rec["date"][0]),
+        "to": int(rec["date"][-1]),
+        "dates": [int(x) for x in rec["date"]],
+        "close": [round(float(x), 2) for x in rec["close"]],
+    }
+    p = os.path.join(out_dir, "bench.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
+    print(f"      基准指数 {index_code} {obj['from']}~{obj['to']} {len(obj['dates'])} 根 -> bench.json ({os.path.getsize(p)} B)")
+    return obj
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "docs", "data"))
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 只（调试用）")
     ap.add_argument("--no-cache", action="store_true", help="不使用复权因子 npz 缓存")
+    ap.add_argument("--bench-only", action="store_true", help="只重建基准指数 bench.json")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     t0 = time.time()
+    if args.bench_only:
+        build_bench(args.out)
+        return
     names = load_names()
     print(f"[1/3] 名称表 {len(names)} 条")
 
@@ -236,6 +264,8 @@ def main():
     }
     with open(os.path.join(args.out, "index.json"), "w", encoding="utf-8") as f:
         json.dump(index, f, ensure_ascii=False, separators=(",", ":"))
+
+    build_bench(args.out)
 
     total_bytes = sum(os.path.getsize(os.path.join(args.out, s[0][2:] + ".bin")) for s in stocks)
     manifest = {
