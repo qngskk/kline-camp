@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   Session, eligibleRange, windowGapOk, pickStartIndex, fracLabel,
-  macd, ema, priorHighIndex, filterDetail, filterHit, FILTER_DEFS, FILTER_ALL, FILTER_CONFLICTS,
+  macd, ema, priorHighIndex, filterDetail, filterHit, FILTER_DEFS, FILTER_ALL,
   PRIOR_HIGH_LOOKBACK,
   buyCost, sellProceeds, limitUpOf, limitDownOf, round2,
   PRE_BARS, MIN_LISTED, LOT_SIZE, FEE,
@@ -695,13 +695,9 @@ test('filterDetail：五个条件逐条判定（用户指定的规则）', () =>
     b.open[71] = 10.3; b.close[71] = 10.1;
     assert.equal(filterDetail(b, 71).aboveSwing, false, '绿柱不能算突破');
   }
-  // ① 与 ② 互斥（用户 2026-09-22 的新 ① 要求最近 2 天下跌，② 要求最近 2 天上涨）
+  // ① 与 ② 不可能同时成立（① 要 cl[T] < cl[T-2]，② 要 cl[T] > cl[T-2]）——
+  // 用户只用单个条件，所以不做互斥检测，这里只把这条性质记下来
   {
-    for (const b of [2, 4, 8]) {
-      assert.ok(FILTER_CONFLICTS.some(c => c.bits.includes(1) && c.bits.includes(b)),
-        `①×${b} 必须登记为互斥（实测联合通过率恒为 0），否则界面不会警告`);
-    }
-    // 构造一个满足 ① 的样本，验证它必然不满足 ②（cl[T] < cl[T-2]，而 ② 要 cl[T] > cl[T-2]）
     const b = mk(i => {
       if (i <= 63) return { o: 9.0, h: 9.2, l: 8.9, c: 9.0 };
       if (i <= 68) return { o: 9.5, h: 10.5, l: 9.4, c: 10.0 };

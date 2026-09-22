@@ -140,11 +140,6 @@ b { font-variant-numeric: tabular-nums; }
 }
 .dd-item input { margin-top: 2px; accent-color: var(--accent); flex: 0 0 auto; }
 .dd-hint { font-size: 10px; color: #64748b; margin-top: 5px; line-height: 1.5; }
-.dd-warn {
-  font-size: 11px; color: #fbbf24; background: rgba(251,191,36,.1);
-  border: 1px solid rgba(251,191,36,.35); border-radius: 7px;
-  padding: 5px 8px; margin-top: 6px; line-height: 1.5;
-}
 .dd-foot { font-size: 10px; color: #64748b; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--line); }
 .dd-foot b { color: var(--gold); }
 .pos-line { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 9px; }

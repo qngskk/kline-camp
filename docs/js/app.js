@@ -6,7 +6,7 @@
  *   → 点「进入下一日」揭示 bar[cur+1] → 严格模式此时按开盘价成交委托篮 → 循环
  */
 import { decodeKLC, fmtDate } from './decode.js';
-import { Session, BOARDS, FILL_MODES, PRE_BARS, MIN_LISTED, FILTER_DEFS, FILTER_ALL, FILTER_CONFLICTS,
+import { Session, BOARDS, FILL_MODES, PRE_BARS, MIN_LISTED, FILTER_DEFS, FILTER_ALL,
          eligibleRange, pickStartIndex, macd, filterDetail, filterHit } from './sim.js';
 import { KChart } from './chart.js';
 
@@ -37,7 +37,7 @@ const state = {
   capital: 100000,
   fees: true,
   fillMode: 'close',
-  filterMask: 1,          // 换股筛选：默认只勾 ①（①与②③④互斥，不能同时勾）
+  filterMask: 0,          // 换股筛选：默认一条都不勾（换股完全随机）
   findex: null,           // filter.bin 倒排索引
   findexFailed: false,
   picked: null,
@@ -352,9 +352,7 @@ function renderAll(fit = false) {
   } else {
     const V = { pullback: fd.pullback, up2: fd.up2, gapBody: fd.gapBody,
                 aboveSwing: fd.aboveSwing, macdCross: fd.macdCross };
-    const bad4 = FILTER_CONFLICTS.find(c => c.bits.every(b => state.filterMask & b));
-    $('sf-now').innerHTML = (bad4 ? '<span class="down">⚠️ 条件互斥，永远抽不到</span><br>' : '') +
-      '当前 ' + FILTER_DEFS.filter(d => state.filterMask & d.bit)
+    $('sf-now').innerHTML = '当前 ' + FILTER_DEFS.filter(d => state.filterMask & d.bit)
       .map(d => `<span class="${V[d.key] ? 'up' : 'down'}">${d.short}${V[d.key] ? '✓' : '✗'}</span>`)
       .join(' · ') + (fd.pullback ? '' : `（回落 ${(fd.dd * 100).toFixed(1)}%）`);
   }
@@ -532,11 +530,6 @@ async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
 function doSwitch() {
   const s = state.session;
   if (!s || !s.canSwitch) return;                  // 含「行情走完」状态，否则会死局
-  const bad = FILTER_CONFLICTS.find(c => c.bits.every(b => state.filterMask & b));
-  if (bad) {                                        // 互斥组合直接说清楚，不用去扫全市场
-    toast('⚠️ ' + bad.why + ' —— 数学上互斥，同时勾选永远抽不到，请去掉其中一个。', 'warn', 7000);
-    return;
-  }
   const btn = $('btn-switch');
   btn.disabled = true; btn.textContent = '换股中…';
   const avoid = s.switches.slice(-120).map(x => x.to);   // 本局换过的尽量不重复
@@ -846,11 +839,6 @@ function bind() {
     const n = boxes.filter(b => b.checked).length;
     $('filter-count').textContent = n;
     $('btn-filter').classList.toggle('on', n > 0);
-    // 互斥条件警告（①要求价格在前高下方、④要求突破前高）
-    const bad = FILTER_CONFLICTS.find(c => c.bits.every(b => state.filterMask & b));
-    const w = $('dd-warn');
-    w.classList.toggle('hidden', !bad);
-    if (bad) w.innerHTML = '⚠️ ' + bad.why + ' —— 数学上互斥，同时勾选永远抽不到，请去掉其中一个。';
     renderAll(false);
   };
   boxesInit();

@@ -54,6 +54,18 @@ const startSession = async () => {
   await wait(550);
 };
 
+const setFilter = async (bits) => {
+  await page.click('#btn-filter'); await wait(150);
+  await page.evaluate((bs) => {
+    document.querySelectorAll('#filter-dd input[data-bit]').forEach(cb => {
+      const want = bs.includes(Number(cb.dataset.bit));
+      if (cb.checked !== want) { cb.checked = want; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+    });
+  }, bits);
+  await wait(250);
+  await page.click('body', { offset: { x: 5, y: 5 } }); await wait(150);
+};
+
 await page.goto(BASE_URL, { waitUntil: 'networkidle2' });
 console.log('0. 冷启动：数据加载完成前不能开局');
 await page.waitForSelector('#modal-setup:not(.hidden)');
@@ -477,13 +489,15 @@ check(!/本股区间|满仓持有/.test(bench), '旧的"随机全仓买入"两�
 check(/中途换股\s*\d+ 次/.test((await text('#rs-stats')).replace(/\s+/g, ' ')), '摘要应显示换股次数');
 await shot('13-switch');
 
-console.log('9c. 换股筛选（回落 3%~15% + 连涨 2 天，仅作用于换股）');
+console.log('9c. 换股筛选（默认不勾 = 完全随机；勾 ① 后只抽满足条件的）');
 await page.click('#rs-again');
 await page.waitForSelector('#modal-setup:not(.hidden)');
 await page.click('#seg-horizon button[data-h="30"]');
 await page.click('#seg-mode button[data-mode="random"]');
 await startSession();
-check(await page.evaluate(() => window.__kline.filterMask) === 1, '换股筛选默认应只勾 ①（mask=1，①与②③④互斥）');
+check(await page.evaluate(() => window.__kline.filterMask) === 0, '换股筛选默认不应勾选任何条件');
+await setFilter([1]);                                   // 只勾 ① 来测
+check(await page.evaluate(() => window.__kline.filterMask) === 1, '勾选后 mask 应为 1');
 const filterState = () => page.evaluate(() => {
   // ① 上涨趋势中回踩 2 天（用户 2026-09-22 口径）
   const s = window.__kline.session, c = s.bars.close, h = s.bars.high, i = s.cur;
@@ -540,17 +554,7 @@ const condAt = () => page.evaluate(() => {
            aboveSwing: c[i] > o[i] && o[i] > ph,
            macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] && m.dif[i] < 0 };
 });
-const setFilter = async (bits) => {
-  await page.click('#btn-filter'); await wait(150);
-  await page.evaluate((bs) => {
-    document.querySelectorAll('#filter-dd input[data-bit]').forEach(cb => {
-      const want = bs.includes(Number(cb.dataset.bit));
-      if (cb.checked !== want) { cb.checked = want; cb.dispatchEvent(new Event('change', { bubbles: true })); }
-    });
-  }, bits);
-  await wait(250);
-  await page.click('body', { offset: { x: 5, y: 5 } }); await wait(150);
-};
+
 for (const [label, bits, key] of [
   ['③阳线实体跳空超前2日高', [4], 'gapBody'],
   ['⑤MACD零下金叉', [16], 'macdCross'],
@@ -564,17 +568,6 @@ for (const [label, bits, key] of [
   console.log(`   只勾「${label}」→ ${after > before ? '换到 ' + c.code : '该日期无匹配'}  ${key}=${c[key]}`);
   if (after > before) check(c[key] === true, `「${label}」筛选出的标的必须满足该条件`);
   else check(/没有一只|无匹配|极少/.test(await page.evaluate(() => document.getElementById('toast')?.innerText || '')), '无匹配时应给出提示');
-}
-for (const pair of [[1, 2], [1, 4], [1, 8]]) {
-  await setFilter(pair);
-  check(!(await page.$eval('#dd-warn', el => el.classList.contains('hidden'))),
-        `①+${pair[1]} 互斥应在下拉里给出警告`);
-  const nconf = await page.evaluate(() => window.__kline.session.switches.length);
-  await page.click('#btn-switch'); await wait(700);
-  check((await page.evaluate(() => window.__kline.session.switches.length)) === nconf,
-        `①+${pair[1]} 互斥时不应换到任何标的`);
-  check(/互斥/.test(await page.evaluate(() => document.getElementById('toast')?.innerText || '')),
-        `①+${pair[1]} 互斥时应立刻给出明确提示`);
 }
 await setFilter([]);
 await setFilter([1, 2, 4, 8, 16]);
