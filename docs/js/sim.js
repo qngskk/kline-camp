@@ -563,12 +563,16 @@ export const FILTER_DEFS = [
   { bit: 1, key: 'pullback', short: '连涨后回踩3~10%',
     label: '上涨趋势中回踩 2 天：T-3 高于 5 天前，收盘相对 T-3 最高价低 3%~10%，且 T-1、T 都收在 T-2 下方' },
   { bit: 2, key: 'up2', short: '连涨2天', label: '最近连续 2 天收盘上涨' },
-  { bit: 4, key: 'gapBody', short: '阳线实体超前2日高',
-    label: '当日收阳，且开盘价高于前 2 日最高价（真跳空，绿柱不算）' },
-  { bit: 8, key: 'aboveSwing', short: '阳线实体破前高',
-    label: '当日收阳，且开盘价高于「前期高点」（实体整根突破）' },
+  { bit: 4, key: 'break2', short: '收盘破前2日高',
+    label: '当日收阳，且收盘价高于前 2 日最高价' },
+  { bit: 8, key: 'breakPrior', short: '收盘破前高',
+    label: '当日收阳，且收盘价高于「前期高点」（近 20 根最高价）' },
   { bit: 16, key: 'macdCross', short: 'MACD零下金叉',
     label: 'MACD 在零轴下方金叉（DIF 上穿 DEA 且 DIF < 0）' },
+  { bit: 32, key: 'hammer', short: '底部反转(锤子)',
+    label: '下影线 ≥ 实体 2 倍，且收盘处于近 20 日区间的下 30%' },
+  { bit: 64, key: 'shootingStar', short: '顶部反转(射击之星)',
+    label: '上影线 ≥ 实体 2 倍，且收盘处于近 20 日区间的上 30%' },
 ];
 export const FILTER_ALL = FILTER_DEFS.reduce((a, d) => a | d.bit, 0);
 /** 「前期高点」的回看根数（不含当日）。20 根≈一个月：够近，能反映"最近的高点"，
@@ -592,7 +596,7 @@ export function filterDetail(bars, i, macdRes, opt = {}) {
   const lookback = opt.priorLookback ?? PRIOR_HIGH_LOOKBACK;
   const bad = { ready: false, mask: 0 };
   if (!bars || i < 70 || i >= bars.n) return bad;
-  const c = bars.close, o = bars.open, h = bars.high;
+  const c = bars.close, o = bars.open, h = bars.high, l = bars.low;
   const pj = priorHighIndex(bars, i, lookback);
   const ph = pj >= 0 ? h[pj] : NaN;
   const bullish = c[i] > o[i];                       // 当日收阳
@@ -607,15 +611,31 @@ export function filterDetail(bars, i, macdRes, opt = {}) {
   const down2 = c[i - 1] < c[i - 2] && c[i] < c[i - 2];
   const pullback = trendUp && inRange && down2;
   const up2 = c[i] > c[i - 1] && c[i - 1] > c[i - 2];       // ② 连涨 2 天
-  const gapBody = bullish && o[i] > Math.max(h[i - 1], h[i - 2]);   // ③ 阳线实体跳空过前 2 日高
-  const aboveSwing = bullish && pj >= 0 && o[i] > ph;       // ④ 阳线实体突破前高
+  // ③④ 用**收盘价**突破（资料原文：「一根K线实体部分收盘价突破前两根K线的高点」/
+  //    「实体部分收盘超过前期高点」；配图里信号 K 线的实体是"跨过"阻力线的，不是整根跳空在上方 ——
+  //    用开盘价会严约 8 倍）
+  const break2 = bullish && c[i] > Math.max(h[i - 1], h[i - 2]);       // ③ 收盘破前 2 日最高价
+  const breakPrior = bullish && pj >= 0 && c[i] > ph;                  // ④ 收盘破前期高点
   let macdCross = null;                                     // ⑤ 零下金叉
   if (macdRes) macdCross = macdRes.dif[i] > macdRes.dea[i] &&
                            macdRes.dif[i - 1] <= macdRes.dea[i - 1] && macdRes.dif[i] < 0;
-  const mask = (pullback ? 1 : 0) | (up2 ? 2 : 0) | (gapBody ? 4 : 0) |
-               (aboveSwing ? 8 : 0) | (macdCross ? 16 : 0);
+  // ⑥⑦ 裸K反转（资料第三种：十字星 + 较大实体反向 K 线；配图是长下影的锤子线）
+  const body = Math.abs(c[i] - o[i]);
+  const lower = Math.min(o[i], c[i]) - l[i];                // 下影线
+  const upper = h[i] - Math.max(o[i], c[i]);                // 上影线
+  let hi20 = -Infinity, lo20 = Infinity;
+  for (let k = i - 19; k <= i; k++) { if (h[k] > hi20) hi20 = h[k]; if (l[k] < lo20) lo20 = l[k]; }
+  const span20 = hi20 - lo20;
+  const pos = span20 > 0 ? (c[i] - lo20) / span20 : 0.5;    // 收盘在近 20 日区间的位置
+  // 影线 > 0 是排除一字板/无波动 K 线（实测只影响 0.06pp）
+  const hammer = lower > 0 && lower >= 2 * body && pos <= 0.30;
+  const shootingStar = upper > 0 && upper >= 2 * body && pos >= 0.70;
+  const mask = (pullback ? 1 : 0) | (up2 ? 2 : 0) | (break2 ? 4 : 0) |
+               (breakPrior ? 8 : 0) | (macdCross ? 16 : 0) |
+               (hammer ? 32 : 0) | (shootingStar ? 64 : 0);
   return { ready: true, mask, dd, priorIdx: pj, priorHigh: ph, bullish,
-           trendUp, inRange, down2, pullback, up2, gapBody, aboveSwing, macdCross };
+           trendUp, inRange, down2, pullback, up2, break2, breakPrior, macdCross,
+           body, lower, upper, pos, hammer, shootingStar };
 }
 
 /** mask 是否覆盖选中的全部条件 */

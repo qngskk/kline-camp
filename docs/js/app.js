@@ -128,7 +128,7 @@ function barsMacd(bars) {
 function maskAt(bars, i) { return filterDetail(bars, i, barsMacd(bars)).mask; }
 
 /** 筛选倒排索引 filter.bin：给三个稀有条件（③阳线实体超前2日高 / ④阳线实体破前高 / ⑤MACD零下金叉）建表 */
-const FILTER_RARE_BITS = [1, 4, 8, 16];
+const FILTER_RARE_BITS = [8, 16];   // 只给通过率 < 5% 的两个条件建了倒排表
 async function loadFilterIndex() {
   if (state.findex || state.findexFailed) return state.findex;
   try {
@@ -137,11 +137,10 @@ async function loadFilterIndex() {
     const buf = await res.arrayBuffer();
     const dv = new DataView(buf);
     const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-    if (magic !== 'KLF3') throw new Error('bad magic');
+    if (magic !== 'KLF4') throw new Error('bad magic');
     const nd = dv.getUint32(4, true);
-    const n = { 1: dv.getUint32(8, true), 4: dv.getUint32(12, true),
-                8: dv.getUint32(16, true), 16: dv.getUint32(20, true) };
-    let off = 24;
+    const n = { 8: dv.getUint32(8, true), 16: dv.getUint32(12, true) };
+    let off = 16;
     const dates = new Int32Array(nd);
     for (let i = 0; i < nd; i++) dates[i] = dv.getUint32(off + i * 4, true);
     off += nd * 4;
@@ -350,11 +349,10 @@ function renderAll(fit = false) {
   } else if (!fd.ready) {
     $('sf-now').innerHTML = '当前标的 K 线不足，无法判定筛选条件';
   } else {
-    const V = { pullback: fd.pullback, up2: fd.up2, gapBody: fd.gapBody,
-                aboveSwing: fd.aboveSwing, macdCross: fd.macdCross };
+    // 直接按 FILTER_DEFS 的 key 取判定结果，加条件时不用改这里
     $('sf-now').innerHTML = '当前 ' + FILTER_DEFS.filter(d => state.filterMask & d.bit)
-      .map(d => `<span class="${V[d.key] ? 'up' : 'down'}">${d.short}${V[d.key] ? '✓' : '✗'}</span>`)
-      .join(' · ') + (fd.pullback ? '' : `（回落 ${(fd.dd * 100).toFixed(1)}%）`);
+      .map(d => `<span class="${fd[d.key] ? 'up' : 'down'}">${d.short}${fd[d.key] ? '✓' : '✗'}</span>`)
+      .join(' · ');
   }
 
   $('act-hint').innerHTML = s.finished

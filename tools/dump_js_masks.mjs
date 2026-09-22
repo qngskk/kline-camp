@@ -32,5 +32,5 @@ for (const [code, list] of byCode) {
     }
   }
 }
-console.log(`比对 ${checked} 个「股票×日期」的筛选掩码（5 个条件）: ${bad ? '❌ ' + bad + ' 处不一致' : '✅ 全部一致'}`);
+console.log(`比对 ${checked} 个「股票×日期」的筛选掩码（7 个条件）: ${bad ? '❌ ' + bad + ' 处不一致' : '✅ 全部一致'}`);
 process.exit(bad ? 1 : 0);

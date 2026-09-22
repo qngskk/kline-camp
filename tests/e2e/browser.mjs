@@ -535,30 +535,42 @@ check(await page.$eval('#filter-dd', el => el.classList.contains('hidden')), '�
 await page.click('#btn-filter'); await wait(200);
 const ddItems = await page.$$eval('#filter-dd .dd-item', els => els.map(e => e.textContent.trim()));
 console.log('   下拉项数:', ddItems.length);
-check(ddItems.length === 5, '筛选下拉应有 5 个条件，实际 ' + ddItems.length);
-check(ddItems.some(t => /阳线实体跳空高于前 2 日最高价/.test(t)), '缺少③阳线实体跳空');
-check(ddItems.some(t => /阳线实体突破/.test(t)), '缺少④阳线实体破前高');
+check(ddItems.length === 7, '筛选下拉应有 7 个条件，实际 ' + ddItems.length);
+check(ddItems.some(t => /收盘价高于前 2 日最高价/.test(t)), '缺少③收盘破前2日高');
+check(ddItems.some(t => /收盘价突破/.test(t)), '缺少④收盘破前高');
 check(ddItems.some(t => /MACD 零下金叉/.test(t)), '缺少⑤MACD零下金叉');
+check(ddItems.some(t => /下影线/.test(t)), '缺少⑥底部反转');
+check(ddItems.some(t => /上影线/.test(t)), '缺少⑦顶部反转');
 await page.click('body', { offset: { x: 5, y: 5 } }); await wait(200);
 check(await page.$eval('#filter-dd', el => el.classList.contains('hidden')), '点空白处应收起下拉');
 
 const condAt = () => page.evaluate(() => {
-  const s = window.__kline.session, c = s.bars.close, o = s.bars.open, h = s.bars.high, i = s.cur;
+  const s = window.__kline.session, c = s.bars.close, o = s.bars.open, h = s.bars.high,
+        lo = s.bars.low, i = s.cur;
   const m = window.__kline.chart.macdRes;
+  let hi20 = -Infinity, lo20 = Infinity;
+  for (let k = i - 19; k <= i; k++) { hi20 = Math.max(hi20, h[k]); lo20 = Math.min(lo20, lo[k]); }
+  const pos = hi20 > lo20 ? (c[i] - lo20) / (hi20 - lo20) : 0.5;
   let hi = -Infinity; for (let k = i - 59; k <= i; k++) hi = Math.max(hi, c[k]);
   const ph = Math.max(...Array.from(h.slice(Math.max(0, i - 20), i)));
   const dd = c[i] / ph - 1;
   return { code: s.stock.code, dd, pullback: dd >= -0.15 && dd <= -0.03,
            up2: c[i] > c[i - 1] && c[i - 1] > c[i - 2],
-           gapBody: c[i] > o[i] && o[i] > Math.max(h[i - 1], h[i - 2]),
-           aboveSwing: c[i] > o[i] && o[i] > ph,
-           macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] && m.dif[i] < 0 };
+           break2: c[i] > o[i] && c[i] > Math.max(h[i - 1], h[i - 2]),
+           breakPrior: c[i] > o[i] && c[i] > ph,
+           macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] && m.dif[i] < 0,
+           hammer: (Math.min(o[i], c[i]) - lo[i]) > 0 &&
+                   (Math.min(o[i], c[i]) - lo[i]) >= 2 * Math.abs(c[i] - o[i]) && pos <= 0.30,
+           shootingStar: (h[i] - Math.max(o[i], c[i])) > 0 &&
+                   (h[i] - Math.max(o[i], c[i])) >= 2 * Math.abs(c[i] - o[i]) && pos >= 0.70 };
 });
 
 for (const [label, bits, key] of [
-  ['③阳线实体跳空超前2日高', [4], 'gapBody'],
+  ['③收盘破前2日高', [4], 'break2'],
   ['⑤MACD零下金叉', [16], 'macdCross'],
-  ['④阳线实体破前高', [8], 'aboveSwing'],
+  ['④收盘破前高', [8], 'breakPrior'],
+  ['⑥底部反转(锤子)', [32], 'hammer'],
+  ['⑦顶部反转(射击之星)', [64], 'shootingStar'],
 ]) {
   await setFilter(bits);
   const before = await page.evaluate(() => window.__kline.session.switches.length);
@@ -570,14 +582,15 @@ for (const [label, bits, key] of [
   else check(/没有一只|无匹配|极少/.test(await page.evaluate(() => document.getElementById('toast')?.innerText || '')), '无匹配时应给出提示');
 }
 await setFilter([]);
-await setFilter([1, 2, 4, 8, 16]);
+await setFilter([1, 2, 4, 8, 16, 32, 64]);
 const b5 = await page.evaluate(() => window.__kline.session.switches.length);
 await page.click('#btn-switch'); await wait(1500);
 const a5 = await page.evaluate(() => window.__kline.session.switches.length);
 const c5 = await condAt();
-console.log(`   五条全选 → ${a5 > b5 ? '换到 ' + c5.code : '该日期无匹配（正常）'}`);
+console.log(`   七条全选 → ${a5 > b5 ? '换到 ' + c5.code : '该日期无匹配（正常）'}`);
 if (a5 > b5) {
-  check(c5.pullback && c5.up2 && c5.gapBody && c5.aboveSwing && c5.macdCross, '五条全选时必须全部满足');
+  check(c5.pullback && c5.up2 && c5.break2 && c5.breakPrior && c5.macdCross &&
+        c5.hammer && c5.shootingStar, '七条全选时必须全部满足');
 }
 await shot('15-filter5');
 

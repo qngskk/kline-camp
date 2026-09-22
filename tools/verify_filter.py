@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""筛选索引一致性验证：filter.bin 的生成口径（Python）必须与前端判定（JS）逐位一致。
+"""筛选索引一致性验证：filter.bin 的生成口径（Python）必须与前端判定（JS）逐位一致（7 个条件）。
 
 之所以必须验证：MACD 的 EMA 以第一根为种子，是**路径依赖**的 ——
 用全历史算 vs 用窗口内数据算，金叉位置会错开。这里随机抽若干「股票×日期」，
@@ -28,7 +28,8 @@ import numpy as np  # noqa: E402
 def mask_of(code: str, date: int) -> int:
     """与 build_filter 完全相同的实现（唯一区别：只算一天）"""
     d = decode_pack(open(os.path.join(ROOT, "docs", "data", code[2:] + ".bin"), "rb").read())
-    cl = _r2(d["close"]); op = _r2(d["open"]); hi = _r2(d["high"]); dates = d["dates"].astype("i8")
+    cl = _r2(d["close"]); op = _r2(d["open"]); hi = _r2(d["high"]); lo = _r2(d["low"])
+    dates = d["dates"].astype("i8")
     n = cl.size
     i = int(np.searchsorted(dates, date))
     if i >= n or int(dates[i]) != date or i < 70:
@@ -44,12 +45,22 @@ def mask_of(code: str, date: int) -> int:
     if cl[i] > cl[i - 1] > cl[i - 2]:
         v |= 2
     bullish = cl[i] > op[i]
-    if bullish and op[i] > max(hi[i - 1], hi[i - 2]):
+    if bullish and cl[i] > max(hi[i - 1], hi[i - 2]):
         v |= 4
-    if bullish and op[i] > ph:
+    if bullish and cl[i] > ph:
         v |= 8
     if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1] and dif[i] < 0:
         v |= 16
+    body = abs(cl[i] - op[i])
+    lower = min(op[i], cl[i]) - lo[i]
+    upper = hi[i] - max(op[i], cl[i])
+    hi20 = hi[i - 19:i + 1].max(); lo20 = lo[i - 19:i + 1].min()
+    span = hi20 - lo20
+    pos = (cl[i] - lo20) / span if span > 0 else 0.5
+    if lower > 0 and lower >= 2 * body and pos <= 0.30:
+        v |= 32
+    if upper > 0 and upper >= 2 * body and pos >= 0.70:
+        v |= 64
     return v
 
 

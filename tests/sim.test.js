@@ -672,28 +672,66 @@ test('filterDetail：五个条件逐条判定（用户指定的规则）', () =>
     const b = mk(i => (i === 70 ? { o: 9.6, h: 9.7, l: 9.5, c: 9.6 } : { o: 9.4, h: 9.6, l: 9.3, c: 9.5 }));
     assert.equal(filterDetail(b, 71).up2, false, '前一天是跌的');
   }
-  // ③ 阳线实体跳空高于前 2 日最高价
+  // ③ 阳线且**收盘价**高于前 2 日最高价（资料：「实体部分收盘价突破前两根K线的高点」）
   {
     const b = mk(i => ({ o: 10.0, h: 10.2, l: 9.9, c: 10.1 }));
-    b.open[71] = 10.3; b.close[71] = 10.5; b.high[71] = 10.8;
-    assert.equal(filterDetail(b, 71).gapBody, true, '阳线且开盘 10.3 > 前两日最高 10.2');
-    b.open[71] = 10.3; b.close[71] = 10.1;
+    // 收盘 10.3 > 前两日最高 10.2，实体 9.95~10.3 跨过该位 —— 资料口径下成立
+    b.open[71] = 9.95; b.close[71] = 10.3; b.high[71] = 10.4;
+    assert.equal(filterDetail(b, 71).break2, true, '收盘 10.3 破前两日最高 10.2');
+    // 高开低走：收盘没破就不算
+    b.open[71] = 10.3; b.close[71] = 10.15;
     assert.equal(filterDetail(b, 71).bullish, false);
-    assert.equal(filterDetail(b, 71).gapBody, false, '高开低走（绿柱）不能算');
-    b.open[71] = 10.0; b.close[71] = 10.1;
-    assert.equal(filterDetail(b, 71).gapBody, false, '没高开在前两日最高之上');
+    assert.equal(filterDetail(b, 71).break2, false, '绿柱不算');
+    // 收盘刚好等于不算
+    b.open[71] = 10.0; b.close[71] = 10.2;
+    assert.equal(filterDetail(b, 71).break2, false, '收盘等于前高不算突破');
   }
-  // ④ 阳线实体突破「前期高点」（近 20 根最高 10.2）
+  // ④ 阳线且**收盘价**高于「前期高点」（近 20 根最高 10.2）
   {
     const b = mk(i => ({ o: 10.0, h: 10.2, l: 9.9, c: 10.1 }));
-    b.open[71] = 10.3; b.close[71] = 10.5; b.high[71] = 10.8;
-    const d = filterDetail(b, 71);
-    assert.equal(d.priorHigh, 10.2);
-    assert.equal(d.aboveSwing, true, '阳线开盘 10.3 突破前高 10.2');
+    const d0 = filterDetail(b, 71);
+    assert.equal(d0.priorHigh, 10.2);
+    b.open[71] = 10.1; b.close[71] = 10.25; b.high[71] = 10.3;
+    assert.equal(filterDetail(b, 71).breakPrior, true, '收盘 10.25 破前高 10.2');
     b.open[71] = 10.1; b.close[71] = 10.2;
-    assert.equal(filterDetail(b, 71).aboveSwing, false, '实体 10.1 没超过前高');
+    assert.equal(filterDetail(b, 71).breakPrior, false, '收盘等于前高不算');
     b.open[71] = 10.3; b.close[71] = 10.1;
-    assert.equal(filterDetail(b, 71).aboveSwing, false, '绿柱不能算突破');
+    assert.equal(filterDetail(b, 71).breakPrior, false, '绿柱不算突破');
+  }
+  // ⑥ 底部反转（锤子）：下影线 ≥ 实体 2 倍 + 收盘在近 20 日区间下 30%
+  {
+    // 前 71 根在高位（11.4~12.0），最后一根跌到 9.0~9.7 留长下影 → 低位 + 长下影
+    const b = mk(i => (i < 71 ? { o: 11.5, h: 12.0, l: 11.4, c: 11.6 }
+                              : { o: 9.55, h: 9.7, l: 9.0, c: 9.6 }));
+    const d = filterDetail(b, 71);
+    assert.equal(d.lower > 2 * d.body, true);
+    assert.equal(d.pos <= 0.30, true, `区间位置 ${(d.pos * 100).toFixed(0)}%`);
+    assert.equal(d.hammer, true, '长下影 + 低位应为底部反转');
+    assert.equal(d.shootingStar, false, '不可能是射击之星');
+    // 上影线长 → 是射击之星不是锤子
+    const b2 = mk(i => (i < 71 ? { o: 5.0, h: 5.1, l: 4.9, c: 5.0 }
+                               : { o: 10.45, h: 11.0, l: 10.4, c: 10.5 }));   // 长上影 + 高位
+    const d2 = filterDetail(b2, 71);
+    assert.equal(d2.shootingStar, true);
+    assert.equal(d2.hammer, false);
+    // 位置够低但下影线不够长（实体 0.5、下影仅 0.1）→ 不算
+    const b3 = mk(i => (i < 71 ? { o: 11.5, h: 12.0, l: 11.4, c: 11.6 }
+                              : { o: 9.1, h: 9.7, l: 9.0, c: 9.6 }));
+    const d3 = filterDetail(b3, 71);
+    assert.equal(d3.pos <= 0.30, true, '位置是够低的');
+    assert.equal(d3.hammer, false, `下影线 ${d3.lower.toFixed(2)} < 实体 ${d3.body.toFixed(2)} 的 2 倍`);
+  }
+  // ⑦ 顶部反转（射击之星）：上影线 ≥ 实体 2 倍 + 收盘在近 20 日区间上 30%
+  {
+    const b = mk(i => (i < 71 ? { o: 9.0, h: 9.1, l: 8.9, c: 9.0 }
+                              : { o: 10.45, h: 11.0, l: 10.4, c: 10.5 }));
+    const d = filterDetail(b, 71);
+    assert.equal(d.upper > 2 * d.body, true);
+    assert.equal(d.pos >= 0.70, true, `区间位置 ${(d.pos * 100).toFixed(0)}%`);
+    assert.equal(d.shootingStar, true);
+    // 位置不对（低位）就不算
+    const b2 = mk(i => ({ o: 10.0, h: 11.0, l: 9.9, c: 10.05 }));
+    assert.equal(filterDetail(b2, 71).shootingStar, false, '低位长上影不算顶部反转');
   }
   // ① 与 ② 不可能同时成立（① 要 cl[T] < cl[T-2]，② 要 cl[T] > cl[T-2]）——
   // 用户只用单个条件，所以不做互斥检测，这里只把这条性质记下来
@@ -743,9 +781,9 @@ test('filterHit：掩码必须覆盖全部勾选项', () => {
   assert.equal(filterHit(0b00011, 0b00011), true);
   assert.equal(filterHit(0b00011, 0b00111), false);
   assert.equal(filterHit(0b11111, 0b00100), true);
-  assert.equal(FILTER_ALL, 31);
-  assert.equal(FILTER_DEFS.length, 5);
-  assert.deepEqual(FILTER_DEFS.map(d => d.bit), [1, 2, 4, 8, 16]);
+  assert.equal(FILTER_ALL, 127);
+  assert.equal(FILTER_DEFS.length, 7);
+  assert.deepEqual(FILTER_DEFS.map(d => d.bit), [1, 2, 4, 8, 16, 32, 64]);
 });
 
 test('费用会真实侵蚀收益', () => {
