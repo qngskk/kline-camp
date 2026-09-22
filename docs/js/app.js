@@ -6,7 +6,8 @@
  *   → 点「进入下一日」揭示 bar[cur+1] → 严格模式此时按开盘价成交委托篮 → 循环
  */
 import { decodeKLC, fmtDate } from './decode.js';
-import { Session, BOARDS, FILL_MODES, PRE_BARS, eligibleRange, pickStartIndex } from './sim.js';
+import { Session, BOARDS, FILL_MODES, PRE_BARS, SWITCH_FILTER, eligibleRange, pickStartIndex,
+         switchFilterDetail, switchFilterOk } from './sim.js';
 import { KChart } from './chart.js';
 
 const $ = sel => document.getElementById(sel[0] === '#' ? sel.slice(1) : sel);
@@ -36,6 +37,7 @@ const state = {
   capital: 100000,
   fees: true,
   fillMode: 'close',
+  switchFilter: true,
   picked: null,
 };
 
@@ -282,6 +284,15 @@ function renderAll(fit = false) {
     pend.classList.add('hidden');
   }
 
+  // 换股筛选：显示当前标的对两个条件的满足情况
+  const fd = switchFilterDetail(s.bars, s.cur);
+  $('sf-now').innerHTML = !state.switchFilter
+    ? '筛选已关闭'
+    : !fd.ready
+      ? '当前标的 K 线不足，无法判定'
+      : `<span class="${fd.inRange ? 'up' : 'down'}">回落 ${(fd.dd * 100).toFixed(1)}% ${fd.inRange ? '✓' : '✗'}</span>` +
+        ` · <span class="${fd.up ? 'up' : 'down'}">连涨2天 ${fd.up ? '✓' : '✗'}</span>`;
+
   $('act-hint').innerHTML = s.finished
     ? '本轮已结束。'
     : s.pending.length
@@ -377,20 +388,42 @@ function doNext() {
 }
 
 /** 在指定日期上随机找一只「当天有交易、且到本局结束日还有行情」的新标的 */
-async function rollStockOnDate(date, endDate, excludeCode) {
+async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
   const cands = candidatesFor(state.horizon).list;
-  for (let k = 0; k < 24; k++) {
-    const c = cands[Math.floor(Math.random() * cands.length)];
-    if (c.s.code === excludeCode) continue;
-    const bars = await loadBars(c.s.code);
+  const useFilter = state.switchFilter;
+  const BATCH = 12;                                  // 并发抓 12 只
+  const ROUNDS = useFilter ? 12 : 2;                 // 最多 144 / 24 个候选
+  const tried = new Set([excludeCode, ...(avoidCodes || [])]);
+  let structural = 0, filtered = 0, none = 0;
+
+  const check = (c, bars) => {
     const i = bars.dates.indexOf(date);
-    if (i < PRE_BARS || i < 0) continue;            // 当天停牌 / 未上市 / 前置 K 线不足
+    if (i < PRE_BARS || i < 0) return null;          // 当天停牌 / 未上市 / 前置 K 线不足
     let j = i;
     for (let t = i; t < bars.n; t++) { if (bars.dates[t] > endDate) break; j = t; }
-    if (j <= i) continue;                            // 到结束日之前没有行情
+    if (j <= i) return null;                         // 到结束日之前没有行情
+    structural++;
+    if (useFilter && !switchFilterOk(bars, i)) { filtered++; return null; }
     return { bars, stock: { code: c.s.code, name: c.s.name, boardIdx: c.s.boardIdx }, cur: i };
+  };
+
+  for (let round = 0; round < ROUNDS; round++) {
+    const batch = [];
+    for (let k = 0; k < BATCH * 2 && batch.length < BATCH; k++) {
+      const c = cands[Math.floor(Math.random() * cands.length)];
+      if (tried.has(c.s.code)) continue;
+      tried.add(c.s.code);
+      batch.push(c);
+    }
+    if (!batch.length) break;
+    const loaded = await Promise.all(batch.map(c => loadBars(c.s.code).catch(() => null)));
+    for (let k = 0; k < batch.length; k++) {
+      if (!loaded[k]) { none++; continue; }
+      const hit = check(batch[k], loaded[k]);
+      if (hit) return { ...hit, tried: tried.size };
+    }
   }
-  return null;
+  return { fail: true, tried: tried.size, structural, filtered, none, useFilter };
 }
 
 function doSwitch() {
@@ -398,9 +431,18 @@ function doSwitch() {
   if (!s || !s.canAct || s.shares > 0) return;
   const btn = $('btn-switch');
   btn.disabled = true; btn.textContent = '换股中…';
-  rollStockOnDate(s.date, s.endDate, s.stock.code).then(pick => {
+  const avoid = s.switches.slice(-120).map(x => x.to);   // 本局换过的尽量不重复
+  rollStockOnDate(s.date, s.endDate, s.stock.code, avoid).then(pick => {
     btn.disabled = false; btn.textContent = '换一只股票';
-    if (!pick) { toast('没抽到合适的新标的，再点一次试试', 'warn', 2600); return; }
+    if (!pick || pick.fail) {
+      const p = pick || {};
+      toast(p.useFilter
+        ? `<b>${fmtDate(s.date)}</b> 这天查了 <b>${p.tried || 0}</b> 只票，没有一只同时满足` +
+          `「回落 3%~15%」和「连涨 2 天」。<br>这种日子满足条件的票本来就极少（全市场不到 1%），` +
+          `不是程序出错 —— 可以再点一次，或取消勾选「换股筛选」。`
+        : '没抽到合适的新标的，再点一次试试', 'warn', 6000);
+      return;
+    }
     const dropped = s.pending.length;
     const r = s.switchStock({ bars: pick.bars, stock: pick.stock, curIdx: pick.cur });
     if (!r.ok) { toast(r.msg, 'warn'); return; }
@@ -681,6 +723,12 @@ function bind() {
 
   $('btn-next').addEventListener('click', doNext);
   $('btn-switch').addEventListener('click', doSwitch);
+  $('chk-sf').addEventListener('change', e => {
+    state.switchFilter = e.target.checked;
+    renderAll(false);
+    toast(e.target.checked ? '换股将只抽满足「回落3~15% + 连涨2天」的标的' : '换股筛选已关闭，改为完全随机',
+          'info', 2400);
+  });
   $('btn-end').addEventListener('click', doEnd);
   $('btn-restart').addEventListener('click', () => { hide('#modal-result'); show('#modal-setup'); updatePoolHint(); });
   $('btn-help').addEventListener('click', () => show('#modal-help'));

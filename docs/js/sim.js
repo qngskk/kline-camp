@@ -516,6 +516,38 @@ export class Session {
   }
 }
 
+/**
+ * 「换股筛选」条件 —— 由用户 2026-09-22 指定，不在此之外自加任何条件：
+ *   ① 从近 LOOKBACK 日**最高收盘**回落 3%~15%（仍在回调中）
+ *   ② 最近连续 UP_DAYS 天上涨（收盘逐日抬高）
+ * 只用于「换一只股票」，不影响开局随机抽样。
+ */
+export const SWITCH_FILTER = {
+  lookback: 60,        // 看多少天的最高收盘
+  pullbackMin: -0.15,  // 回落下限（跌幅不超过 15%）
+  pullbackMax: -0.03,  // 回落上限（至少回落 3%）
+  upDays: 2,           // 连续上涨天数
+};
+
+/** 计算筛选明细，供界面显示 */
+export function switchFilterDetail(bars, i, f = SWITCH_FILTER) {
+  const need = Math.max(f.lookback - 1, f.upDays);
+  if (!bars || i < need || i >= bars.n) return { ok: false, ready: false, dd: null, up: false };
+  const c = bars.close;
+  let hi = -Infinity;
+  for (let k = i - f.lookback + 1; k <= i; k++) if (c[k] > hi) hi = c[k];
+  const dd = hi > 0 ? c[i] / hi - 1 : 0;
+  let up = true;
+  for (let k = 0; k < f.upDays; k++) if (!(c[i - k] > c[i - k - 1])) { up = false; break; }
+  const inRange = dd >= f.pullbackMin && dd <= f.pullbackMax;
+  return { ok: inRange && up, ready: true, dd, inRange, up };
+}
+
+/** 筛选条件是否满足（换股用） */
+export function switchFilterOk(bars, i, f = SWITCH_FILTER) {
+  return switchFilterDetail(bars, i, f).ok;
+}
+
 /** 0.25 -> '1/4'；0.5 -> '1/2'；0.3333 -> '1/3' */
 export function fracLabel(f) {
   if (f >= 0.999999) return '满仓';

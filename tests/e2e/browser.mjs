@@ -449,8 +449,39 @@ check(!/本股区间|满仓持有/.test(bench), '旧的"随机全仓买入"两�
 check(/中途换股\s*4 次/.test((await text('#rs-stats')).replace(/\s+/g, ' ')), '摘要应显示换股次数');
 await shot('13-switch');
 
+console.log('9c. 换股筛选（回落 3%~15% + 连涨 2 天，仅作用于换股）');
+await page.click('#rs-again');
+await page.waitForSelector('#modal-setup:not(.hidden)');
+await page.click('#seg-horizon button[data-h="30"]');
+await page.click('#seg-mode button[data-mode="random"]');
+await startSession();
+check(await page.$eval('#chk-sf', el => el.checked), '换股筛选应默认开启');
+const filterState = () => page.evaluate(() => {
+  const s = window.__kline.session, c = s.bars.close, i = s.cur;
+  let hi = -Infinity; for (let k = i - 59; k <= i; k++) hi = Math.max(hi, c[k]);
+  const dd = c[i] / hi - 1;
+  const up = c[i] > c[i - 1] && c[i - 1] > c[i - 2];
+  return { dd, up, pass: dd >= -0.15 && dd <= -0.03 && up };
+});
+let hits = 0, violates = 0;
+for (let k = 0; k < 6; k++) {
+  const before = await page.evaluate(() => window.__kline.session.switches.length);
+  await page.click('#btn-switch');
+  await wait(650);
+  const after = await page.evaluate(() => window.__kline.session.switches.length);
+  if (after > before) {
+    hits++;
+    const r = await filterState();
+    if (!r.pass) { violates++; console.log('   ❌ 违反筛选:', JSON.stringify(r)); }
+  }
+}
+console.log(`   筛选下换股成功 ${hits}/6 次，违反条件 ${violates} 次`);
+check(hits >= 1, '筛选下应至少成功换股一次（该日期通过率过低时会失败并给出提示）');
+check(violates === 0, '筛选换到的标的必须同时满足「回落3~15%」与「连涨2天」');
+check(/换股筛选/.test(await text('.sf-line')), '侧栏应显示当前标的的筛选状态');
+await shot('14-filter');
+
 console.log('10. 移动端布局');
-await page.click('#rs-view');
 await page.click('#btn-restart');
 await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });
 await wait(500);

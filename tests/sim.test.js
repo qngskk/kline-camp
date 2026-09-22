@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   Session, eligibleRange, windowGapOk, pickStartIndex, fracLabel,
+  switchFilterOk, switchFilterDetail, SWITCH_FILTER,
   buyCost, sellProceeds, limitUpOf, limitDownOf, round2,
   PRE_BARS, MIN_LISTED, LOT_SIZE, FEE,
 } from '../docs/js/sim.js';
@@ -574,6 +575,62 @@ test('换股会作废旧标的的未成交委托', () => {
   assert.equal(s.shares, 0);
   const n = s.nextDay();
   assert.equal(n.fills.length, 0, '旧委托不应在新标的上成交');
+});
+
+test('换股筛选：回落 3%~15% + 连涨 2 天（用户指定条件）', () => {
+  const n = 200;
+  const mk = (closes) => {
+    const c = new Float64Array(n).fill(10);
+    closes.forEach(([i, v]) => { c[i] = v; });
+    return { n, dates: new Int32Array(n).map((_, i) => 20240101 + i),
+             open: c.slice(), high: c.slice(), low: c.slice(), close: c, vol: new Float64Array(n).fill(1e6) };
+  };
+  // ① 高点 10、最近三天 9.0→9.2→9.4（回落 6%，连涨 2 天）→ 通过
+  {
+    const b = mk([[69, 9.0], [70, 9.2], [71, 9.4]]);
+    const d = switchFilterDetail(b, 71);
+    assert.equal(d.inRange, true, `回落 ${(d.dd * 100).toFixed(1)}% 应在 [-15%,-3%]`);
+    assert.equal(d.up, true, '9.2→9.4 应为连涨');
+    assert.equal(switchFilterOk(b, 71), true);
+  }
+  // ② 只涨 1 天（9.6→9.4→9.6）→ 不通过
+  {
+    const b = mk([[69, 9.6], [70, 9.4], [71, 9.6]]);
+    const d = switchFilterDetail(b, 71);
+    assert.equal(d.inRange, true);
+    assert.equal(d.up, false, '前一天是跌的，不算连涨 2 天');
+    assert.equal(switchFilterOk(b, 71), false);
+  }
+  // ③ 离高点太近（10.2→10.3→10.4，几乎在高点）→ 不通过
+  {
+    const b = mk([[69, 10.2], [70, 10.3], [71, 10.4]]);
+    const d = switchFilterDetail(b, 71);
+    assert.equal(d.inRange, false, `回落 ${(d.dd * 100).toFixed(1)}% 不足 3%`);
+    assert.equal(switchFilterOk(b, 71), false);
+  }
+  // ④ 回落超过 15%（8.0→8.2→8.4，高点 10）→ 不通过
+  {
+    const b = mk([[69, 8.0], [70, 8.2], [71, 8.4]]);
+    const d = switchFilterDetail(b, 71);
+    assert.ok(d.dd < -0.15, `回落 ${(d.dd * 100).toFixed(1)}% 应小于 -15%`);
+    assert.equal(switchFilterOk(b, 71), false);
+  }
+  // ⑤ 只看近 60 日：100 天前的 30 元不算高点
+  {
+    const b = mk([[100, 30], [158, 10], [159, 9.0], [160, 9.2], [161, 9.4]]);
+    const d = switchFilterDetail(b, 161);
+    assert.ok(Math.abs(d.dd - (-0.06)) < 1e-9, `应只用近 60 日最高收盘 10，实际回落 ${(d.dd * 100).toFixed(1)}%`);
+    assert.equal(switchFilterOk(b, 161), true);
+  }
+  // ⑥ K 线不足 60 根 → 无法判定，不通过
+  {
+    const b = mk([]);
+    assert.equal(switchFilterDetail(b, 10).ready, false);
+    assert.equal(switchFilterOk(b, 10), false);
+  }
+  assert.equal(SWITCH_FILTER.pullbackMin, -0.15);
+  assert.equal(SWITCH_FILTER.pullbackMax, -0.03);
+  assert.equal(SWITCH_FILTER.upDays, 2);
 });
 
 test('费用会真实侵蚀收益', () => {
