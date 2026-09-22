@@ -551,16 +551,24 @@ export function macd(closes, fast = 12, slow = 26, signal = 9) {
  *   ⑤ MACD 金叉（DIF 上穿 DEA）
  */
 export const FILTER_DEFS = [
-  { bit: 1, key: 'pullback', short: '回落3~15%', label: '从近 60 日最高收盘回落 3%~15%' },
+  { bit: 1, key: 'pullback', short: '回踩3~15%',
+    label: '从「最近一个前期高点」回落 3%~15%' },
   { bit: 2, key: 'up2', short: '连涨2天', label: '最近连续 2 天收盘上涨' },
-  { bit: 4, key: 'gapBody', short: '实体超前2日高', label: 'K 线实体高于前 2 日最高价' },
-  { bit: 8, key: 'aboveSwing', short: '实体破前高', label: 'K 线实体高于最近一个前期高点' },
-  { bit: 16, key: 'macdCross', short: 'MACD金叉', label: 'MACD 金叉（DIF 上穿 DEA）' },
+  { bit: 4, key: 'gapBody', short: '阳线实体超前2日高',
+    label: '当日收阳，且开盘价高于前 2 日最高价（真跳空，绿柱不算）' },
+  { bit: 8, key: 'aboveSwing', short: '阳线实体破前高',
+    label: '当日收阳，且开盘价高于「最近一个前期高点」' },
+  { bit: 16, key: 'macdCross', short: 'MACD零下金叉',
+    label: 'MACD 在零轴下方金叉（DIF 上穿 DEA 且 DIF < 0）' },
 ];
 export const FILTER_ALL = FILTER_DEFS.reduce((a, d) => a | d.bit, 0);
+/** 互斥的条件组合：①要求价格在前高下方、④要求实体突破前高，同时勾选永远抽不到 */
+export const FILTER_CONFLICTS = [
+  { bits: [1, 8], why: '①回踩3~15%（价格在前高下方）与 ④实体破前高（已突破前高）互斥' },
+];
 
 /** 最近一个「已完成」的摆动高点（前后各 k 根里的最高，即分形高点）。找不到返回 -1 */
-export function swingHighIndex(bars, i, k = 3, lookback = 60) {
+export function swingHighIndex(bars, i, k = 5, lookback = 60) {
   const h = bars.high;
   const from = Math.max(k, i - lookback);
   for (let j = i - k; j >= from; j--) {
@@ -572,26 +580,26 @@ export function swingHighIndex(bars, i, k = 3, lookback = 60) {
 }
 
 /** 逐条判定，返回明细（供界面显示） */
-export function filterDetail(bars, i, macdRes) {
+export function filterDetail(bars, i, macdRes, opt = {}) {
+  const k = opt.swingK ?? 5, lookback = opt.swingLookback ?? 60;
   const bad = { ready: false, mask: 0 };
-  if (!bars || i < 65 || i >= bars.n) return bad;
+  if (!bars || i < 70 || i >= bars.n) return bad;
   const c = bars.close, o = bars.open, h = bars.high;
-  let hi = -Infinity;
-  for (let k = i - 59; k <= i; k++) if (c[k] > hi) hi = c[k];
-  const dd = hi > 0 ? c[i] / hi - 1 : 0;
-  const pullback = dd >= -0.15 && dd <= -0.03;
-  const up2 = c[i] > c[i - 1] && c[i - 1] > c[i - 2];
-  const bodyLo = Math.min(o[i], c[i]);
-  const gapBody = bodyLo > Math.max(h[i - 1], h[i - 2]);
-  const sh = swingHighIndex(bars, i);
-  const aboveSwing = sh >= 0 && bodyLo > h[sh];
-  let macdCross = null;
-  if (macdRes) {
-    macdCross = macdRes.dif[i] > macdRes.dea[i] && macdRes.dif[i - 1] <= macdRes.dea[i - 1];
-  }
+  const sj = swingHighIndex(bars, i, k, lookback);
+  const sh = sj >= 0 ? h[sj] : NaN;
+  const dd = sj >= 0 && sh > 0 ? c[i] / sh - 1 : NaN;
+  const bullish = c[i] > o[i];                       // 当日收阳
+  const pullback = sj >= 0 && dd >= -0.15 && dd <= -0.03;   // ① 从最近前高回落 3~15%
+  const up2 = c[i] > c[i - 1] && c[i - 1] > c[i - 2];       // ② 连涨 2 天
+  const gapBody = bullish && o[i] > Math.max(h[i - 1], h[i - 2]);   // ③ 阳线实体跳空过前 2 日高
+  const aboveSwing = bullish && sj >= 0 && o[i] > sh;       // ④ 阳线实体突破前高
+  let macdCross = null;                                     // ⑤ 零下金叉
+  if (macdRes) macdCross = macdRes.dif[i] > macdRes.dea[i] &&
+                           macdRes.dif[i - 1] <= macdRes.dea[i - 1] && macdRes.dif[i] < 0;
   const mask = (pullback ? 1 : 0) | (up2 ? 2 : 0) | (gapBody ? 4 : 0) |
                (aboveSwing ? 8 : 0) | (macdCross ? 16 : 0);
-  return { ready: true, mask, dd, pullback, up2, gapBody, aboveSwing, macdCross, swingIdx: sh };
+  return { ready: true, mask, dd, swingIdx: sj, swingHigh: sh, bullish,
+           pullback, up2, gapBody, aboveSwing, macdCross };
 }
 
 /** mask 是否覆盖选中的全部条件 */

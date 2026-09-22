@@ -467,11 +467,16 @@ await page.click('#seg-mode button[data-mode="random"]');
 await startSession();
 check(await page.evaluate(() => window.__kline.filterMask) === 3, '换股筛选默认应勾选前两条（mask=3）');
 const filterState = () => page.evaluate(() => {
-  const s = window.__kline.session, c = s.bars.close, i = s.cur;
-  let hi = -Infinity; for (let k = i - 59; k <= i; k++) hi = Math.max(hi, c[k]);
-  const dd = c[i] / hi - 1;
+  const s = window.__kline.session, c = s.bars.close, h = s.bars.high, i = s.cur;
+  let j = -1;
+  for (let k = i - 5; k >= Math.max(5, i - 60); k--) {
+    let ok = true;
+    for (let q = k - 5; q <= k + 5; q++) if (h[q] > h[k] + 1e-9) { ok = false; break; }
+    if (ok) { j = k; break; }
+  }
+  const dd = j >= 0 ? c[i] / h[j] - 1 : NaN;
   const up = c[i] > c[i - 1] && c[i - 1] > c[i - 2];
-  return { dd, up, pass: dd >= -0.15 && dd <= -0.03 && up };
+  return { dd, up, pass: j >= 0 && dd >= -0.15 && dd <= -0.03 && up };
 });
 let hits = 0, violates = 0;
 for (let k = 0; k < 6; k++) {
@@ -488,7 +493,7 @@ for (let k = 0; k < 6; k++) {
 console.log(`   筛选下换股成功 ${hits}/6 次，违反条件 ${violates} 次`);
 check(hits >= 1, '筛选下应至少成功换股一次（该日期通过率过低时会失败并给出提示）');
 check(violates === 0, '筛选换到的标的必须同时满足「回落3~15%」与「连涨2天」');
-check(/回落/.test(await text('#sf-now')), '侧栏应显示当前标的对已勾选条件的满足情况');
+check(/回踩/.test(await text('#sf-now')), '侧栏应显示当前标的对已勾选条件的满足情况');
 await shot('14-filter');
 
 console.log('9d. 新增三个条件 + 筛选下拉');
@@ -502,9 +507,9 @@ await page.click('#btn-filter'); await wait(200);
 const ddItems = await page.$$eval('#filter-dd .dd-item', els => els.map(e => e.textContent.trim()));
 console.log('   下拉项数:', ddItems.length);
 check(ddItems.length === 5, '筛选下拉应有 5 个条件，实际 ' + ddItems.length);
-check(ddItems.some(t => /实体高于前 2 日最高价/.test(t)), '缺少「实体高于前2日最高价」');
-check(ddItems.some(t => /前期高点/.test(t)), '缺少「实体高于前期高点」');
-check(ddItems.some(t => /MACD 金叉/.test(t)), '缺少「MACD金叉」');
+check(ddItems.some(t => /阳线实体跳空高于前 2 日最高价/.test(t)), '缺少③阳线实体跳空');
+check(ddItems.some(t => /阳线实体突破/.test(t)), '缺少④阳线实体破前高');
+check(ddItems.some(t => /MACD 零下金叉/.test(t)), '缺少⑤MACD零下金叉');
 await page.click('body', { offset: { x: 5, y: 5 } }); await wait(200);
 check(await page.$eval('#filter-dd', el => el.classList.contains('hidden')), '点空白处应收起下拉');
 
@@ -512,17 +517,18 @@ const condAt = () => page.evaluate(() => {
   const s = window.__kline.session, c = s.bars.close, o = s.bars.open, h = s.bars.high, i = s.cur;
   const m = window.__kline.chart.macdRes;
   let hi = -Infinity; for (let k = i - 59; k <= i; k++) hi = Math.max(hi, c[k]);
-  const dd = c[i] / hi - 1, bl = Math.min(o[i], c[i]);
   let j = -1;
-  for (let k = i - 3; k >= Math.max(3, i - 60); k--) {
+  for (let k = i - 5; k >= Math.max(5, i - 60); k--) {
     let ok = true;
-    for (let q = k - 3; q <= k + 3; q++) if (h[q] > h[k] + 1e-9) { ok = false; break; }
+    for (let q = k - 5; q <= k + 5; q++) if (h[q] > h[k] + 1e-9) { ok = false; break; }
     if (ok) { j = k; break; }
   }
-  return { code: s.stock.code, dd, pullback: dd >= -0.15 && dd <= -0.03,
+  const dd = j >= 0 ? c[i] / h[j] - 1 : NaN;
+  return { code: s.stock.code, dd, pullback: j >= 0 && dd >= -0.15 && dd <= -0.03,
            up2: c[i] > c[i - 1] && c[i - 1] > c[i - 2],
-           gapBody: bl > Math.max(h[i - 1], h[i - 2]), aboveSwing: j >= 0 && bl > h[j],
-           macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] };
+           gapBody: c[i] > o[i] && o[i] > Math.max(h[i - 1], h[i - 2]),
+           aboveSwing: c[i] > o[i] && j >= 0 && o[i] > h[j],
+           macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] && m.dif[i] < 0 };
 });
 const setFilter = async (bits) => {
   await page.click('#btn-filter'); await wait(150);
@@ -536,9 +542,9 @@ const setFilter = async (bits) => {
   await page.click('body', { offset: { x: 5, y: 5 } }); await wait(150);
 };
 for (const [label, bits, key] of [
-  ['实体高于前2日最高价', [4], 'gapBody'],
-  ['MACD 金叉', [16], 'macdCross'],
-  ['实体高于前期高点', [8], 'aboveSwing'],
+  ['③阳线实体跳空超前2日高', [4], 'gapBody'],
+  ['⑤MACD零下金叉', [16], 'macdCross'],
+  ['④阳线实体破前高', [8], 'aboveSwing'],
 ]) {
   await setFilter(bits);
   const before = await page.evaluate(() => window.__kline.session.switches.length);
@@ -549,6 +555,11 @@ for (const [label, bits, key] of [
   if (after > before) check(c[key] === true, `「${label}」筛选出的标的必须满足该条件`);
   else check(/没有一只|无匹配|极少/.test(await page.evaluate(() => document.getElementById('toast')?.innerText || '')), '无匹配时应给出提示');
 }
+await setFilter([1, 8]);
+check(!(await page.$eval('#dd-warn', el => el.classList.contains('hidden'))), '①+④ 互斥应在下拉里给出警告');
+const nconf = await page.evaluate(() => window.__kline.session.switches.length);
+await page.click('#btn-switch'); await wait(1200);
+check((await page.evaluate(() => window.__kline.session.switches.length)) === nconf, '①+④ 互斥时不应换到任何标的');
 await setFilter([1, 2, 4, 8, 16]);
 const b5 = await page.evaluate(() => window.__kline.session.switches.length);
 await page.click('#btn-switch'); await wait(1500);

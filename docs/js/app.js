@@ -6,7 +6,7 @@
  *   → 点「进入下一日」揭示 bar[cur+1] → 严格模式此时按开盘价成交委托篮 → 循环
  */
 import { decodeKLC, fmtDate } from './decode.js';
-import { Session, BOARDS, FILL_MODES, PRE_BARS, FILTER_DEFS, FILTER_ALL,
+import { Session, BOARDS, FILL_MODES, PRE_BARS, FILTER_DEFS, FILTER_ALL, FILTER_CONFLICTS,
          eligibleRange, pickStartIndex, macd, filterDetail, filterHit } from './sim.js';
 import { KChart } from './chart.js';
 
@@ -127,7 +127,8 @@ function barsMacd(bars) {
 }
 function maskAt(bars, i) { return filterDetail(bars, i, barsMacd(bars)).mask; }
 
-/** 筛选倒排索引 filter.bin：只给最稀有的两个条件（③实体超前2日高、⑤MACD金叉）建表 */
+/** 筛选倒排索引 filter.bin：给三个稀有条件（③阳线实体超前2日高 / ④阳线实体破前高 / ⑤MACD零下金叉）建表 */
+const FILTER_RARE_BITS = [4, 8, 16];
 async function loadFilterIndex() {
   if (state.findex || state.findexFailed) return state.findex;
   try {
@@ -136,29 +137,37 @@ async function loadFilterIndex() {
     const buf = await res.arrayBuffer();
     const dv = new DataView(buf);
     const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-    if (magic !== 'KLF1') throw new Error('bad magic');
-    const nd = dv.getUint32(4, true), n3 = dv.getUint32(8, true), n5 = dv.getUint32(12, true);
-    let off = 16;
+    if (magic !== 'KLF2') throw new Error('bad magic');
+    const nd = dv.getUint32(4, true);
+    const n = { 4: dv.getUint32(8, true), 8: dv.getUint32(12, true), 16: dv.getUint32(16, true) };
+    let off = 20;
     const dates = new Int32Array(nd);
     for (let i = 0; i < nd; i++) dates[i] = dv.getUint32(off + i * 4, true);
     off += nd * 4;
-    const o3 = new Uint32Array(nd + 1), o5 = new Uint32Array(nd + 1);
-    for (let i = 0; i <= nd; i++) o3[i] = dv.getUint32(off + i * 4, true);
-    off += (nd + 1) * 4;
-    for (let i = 0; i <= nd; i++) o5[i] = dv.getUint32(off + i * 4, true);
-    off += (nd + 1) * 4;
-    const idx3 = new Uint16Array(buf, off, n3); off += n3 * 2;
-    const idx5 = new Uint16Array(buf, off, n5);
+    const offs = {};
+    for (const b of FILTER_RARE_BITS) {
+      const a = new Uint32Array(nd + 1);
+      for (let i = 0; i <= nd; i++) a[i] = dv.getUint32(off + i * 4, true);
+      off += (nd + 1) * 4;
+      offs[b] = a;
+    }
+    const idx = {};
+    for (const b of FILTER_RARE_BITS) { idx[b] = new Uint16Array(buf, off, n[b]); off += n[b] * 2; }
     const col = new Map();
     for (let i = 0; i < nd; i++) col.set(dates[i], i);
-    state.findex = { nd, o3, o5, idx3, idx5, col };
+    state.findex = { nd, dates, offs, idx, col, count: n };
   } catch (e) {
-    state.findexFailed = true;                   // 拿不到就退回随机扫，不影响使用
+    state.findexFailed = true;                   // 拿不到就退回盲抽，不影响使用
   }
   return state.findex;
 }
 
-/** 按 horizon 建可抽样本表（含累计权重） */
+/** 取某个条件在某天的倒排候选（行号 = index.json 里的下标） */
+function postingRows(fi, bit, col) {
+  return fi.idx[bit].subarray(fi.offs[bit][col], fi.offs[bit][col + 1]);
+}
+
+/** 按 horizon 建可抽样本表（含累计权重） *//** 按 horizon 建可抽样本表（含累计权重） */
 function candidatesFor(horizon) {
   if (state.candCache.has(horizon)) return state.candCache.get(horizon);
   const list = [];
@@ -333,7 +342,9 @@ function renderAll(fit = false) {
   } else {
     const V = { pullback: fd.pullback, up2: fd.up2, gapBody: fd.gapBody,
                 aboveSwing: fd.aboveSwing, macdCross: fd.macdCross };
-    $('sf-now').innerHTML = '当前 ' + FILTER_DEFS.filter(d => state.filterMask & d.bit)
+    const bad4 = FILTER_CONFLICTS.find(c => c.bits.every(b => state.filterMask & b));
+    $('sf-now').innerHTML = (bad4 ? '<span class="down">⚠️ 条件互斥，永远抽不到</span><br>' : '') +
+      '当前 ' + FILTER_DEFS.filter(d => state.filterMask & d.bit)
       .map(d => `<span class="${V[d.key] ? 'up' : 'down'}">${d.short}${V[d.key] ? '✓' : '✗'}</span>`)
       .join(' · ') + (fd.pullback ? '' : `（回落 ${(fd.dd * 100).toFixed(1)}%）`);
   }
@@ -451,19 +462,17 @@ async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
   };
 
   let pool = null;                                  // 倒排表给出的候选只数（用于失败提示）
-  // 路线 A：选了稀有条件（③或⑤）→ 用倒排表直接锁定候选，避免海量盲抽
-  if (want & 12) {
+  // 路线 A：勾了稀有条件 → 用倒排表锁定候选（取最稀有的一张做起点，其余求交）
+  const rareSel = FILTER_RARE_BITS.filter(b => want & b);
+  if (rareSel.length) {
     const fi = await loadFilterIndex();
-    const c = fi && fi.col.get(date);
-    if (fi && c !== undefined) {
-      let rows;
-      const s3 = fi.idx3.subarray(fi.o3[c], fi.o3[c + 1]);
-      const s5 = fi.idx5.subarray(fi.o5[c], fi.o5[c + 1]);
-      if ((want & 4) && (want & 16)) {
-        const set5 = new Set(s5);
-        rows = Array.from(s3).filter(r => set5.has(r));
-      } else {
-        rows = Array.from((want & 4) ? s3 : s5);
+    const col = fi && fi.col.get(date);
+    if (fi && col !== undefined) {
+      rareSel.sort((a, b) => fi.count[a] - fi.count[b]);
+      let rows = Array.from(postingRows(fi, rareSel[0], col));
+      for (const b of rareSel.slice(1)) {
+        const set = new Set(postingRows(fi, b, col));
+        rows = rows.filter(r => set.has(r));
       }
       pool = rows.length;
       for (let k = rows.length - 1; k > 0; k--) {    // 洗牌：同一候选集每次顺序不同
@@ -484,7 +493,7 @@ async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
 
   // 路线 B：盲抽（并发批量）
   const cands = candidatesFor(state.horizon).list;
-  const ROUNDS = want ? 20 : 2;                      // 最多 240 / 24 个候选
+  const ROUNDS = want ? 12 : 2;                      // 只剩常见条件时才盲抽（最多 144 个候选）
   for (let round = 0; round < ROUNDS; round++) {
     const batch = [];
     for (let k = 0; k < BATCH * 2 && batch.length < BATCH; k++) {
@@ -815,6 +824,11 @@ function bind() {
     const n = boxes.filter(b => b.checked).length;
     $('filter-count').textContent = n;
     $('btn-filter').classList.toggle('on', n > 0);
+    // 互斥条件警告（①要求价格在前高下方、④要求突破前高）
+    const bad = FILTER_CONFLICTS.find(c => c.bits.every(b => state.filterMask & b));
+    const w = $('dd-warn');
+    w.classList.toggle('hidden', !bad);
+    if (bad) w.textContent = '⚠️ ' + bad.why + ' —— 同时勾选永远抽不到，请二选一。';
     renderAll(false);
   };
   boxesInit();

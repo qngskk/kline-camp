@@ -166,6 +166,7 @@ def build_bench(out_dir: str, index_code: str = "sh000300"):
 
 
 FILTER_LOOKBACK = 60
+FILTER_SWING_K = 5          # 分形高点：前后各 5 根（前后各 3 根会把反弹中的小高点误判为「前高」）
 
 
 def _ema(x: np.ndarray, n: int) -> np.ndarray:
@@ -189,10 +190,13 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
     """算出一只标的在「可抽日期轴」上每天的筛选位掩码。
 
     ⚠️ 必须用**前端看到的那份数据**（docs/data/*.bin 解码并取整到分），不能用原始 .day：
-       MACD 的 EMA 以第一根为种子，是路径依赖的；用全历史（1999 起）算出来的
-       金叉位置和前端（只有窗口内 60+ 根）算出来的会错开。
+       MACD 的 EMA 以第一根为种子，是路径依赖的；用全历史算出来的金叉位置和前端会错开。
     位定义必须与 docs/js/sim.js 的 FILTER_DEFS 一致：
-      1 回落3~15%  2 连涨2天  4 实体超前2日最高  8 实体破前高  16 MACD金叉
+      1  从「最近一个前期高点」回落 3%~15%
+      2  最近连续 2 天收盘上涨
+      4  当日收阳，且开盘价高于前 2 日最高价
+      8  当日收阳，且开盘价高于「最近一个前期高点」
+      16 MACD 零下金叉（DIF 上穿 DEA 且 DIF < 0）
     """
     nd = len(axis["dates"])
     m = np.zeros(nd, dtype=np.uint8)
@@ -210,14 +214,15 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
         cl = rec["close"].astype("f8"); op = rec["open"].astype("f8"); hi = rec["high"].astype("f8")
         dates = rec["date"].astype("i8")
     n = cl.size
-    if n < 200:
+    if n < 250:
         return m
     dif = _ema(cl, 12) - _ema(cl, 26)
     dea = _ema(dif, 9)
-    # 分形高点（前后各 3 根）：预计算「上一个摆动高点下标」，避免逐日重复扫描
+
+    K = FILTER_SWING_K
     is_sw = np.zeros(n, dtype=bool)
-    for j in range(3, n - 3):
-        if hi[j] >= hi[j - 3:j + 4].max() - 1e-9:
+    for j in range(K, n - K):
+        if hi[j] >= hi[j - K:j + K + 1].max() - 1e-9:
             is_sw[j] = True
     last_sw = np.full(n, -1, dtype=np.int64)
     cur = -1
@@ -230,23 +235,26 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
     for k in range(nd):
         d = axis["dates"][k]
         i = int(np.searchsorted(dates, d))
-        if i >= n or int(dates[i]) != d or i < 65:
+        if i >= n or int(dates[i]) != d or i < 70:
             continue
         if d < lo or d > hi_d:
             continue
+        sj = int(last_sw[i - K]) if i - K >= 0 else -1
+        if sj < max(K, i - FILTER_LOOKBACK):
+            sj = -1
         v = 0
-        dd = cl[i] / cl[i - FILTER_LOOKBACK + 1:i + 1].max() - 1
-        if -0.15 <= dd <= -0.03:
-            v |= 1
+        if sj >= 0:
+            dd = cl[i] / hi[sj] - 1
+            if -0.15 <= dd <= -0.03:
+                v |= 1
         if cl[i] > cl[i - 1] > cl[i - 2]:
             v |= 2
-        body_lo = min(op[i], cl[i])
-        if body_lo > max(hi[i - 1], hi[i - 2]):
+        bullish = cl[i] > op[i]
+        if bullish and op[i] > max(hi[i - 1], hi[i - 2]):
             v |= 4
-        j = int(last_sw[i - 3])
-        if j >= max(3, i - FILTER_LOOKBACK) and body_lo > hi[j]:
+        if bullish and sj >= 0 and op[i] > hi[sj]:
             v |= 8
-        if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1]:
+        if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1] and dif[i] < 0:
             v |= 16
         m[k] = v
     return m
@@ -255,50 +263,54 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
 def build_filter(stocks, out_dir: str):
     """生成 docs/data/filter.bin —— 「换股筛选」的倒排索引。
 
-    只给最稀有的两个条件 ③实体超前2日最高(3%)、⑤MACD金叉(4%) 建倒排表；
-    其余三个条件通过率高（46%/23%/13%），前端拿到候选后再实时判定即可。
-    这样「五个条件全选」（全市场 0.02%）也能一次抽到。
+    给三个稀有条件建倒排表（实测通过率）：
+        ③ 阳线实体超前2日高  2.3%
+        ④ 阳线实体破前高     7.6%
+        ⑤ MACD 零下金叉      2.4%
+    ①(47.8%) ②(23%) 太常见，建表反而占空间，前端拿到候选后实时判定即可。
+    这样任意组合（含"全选"）都能一次锁定候选，不必盲抽。
+
     格式（全部小端）：
-        'KLF1' | u32 nd | u32 n3 | u32 n5 | u32 dates[nd] | u32 off3[nd+1] | u32 off5[nd+1]
-              | u16 idx3[n3] | u16 idx5[n5]
+        'KLF2' | u32 nd | u32 n4 | u32 n8 | u32 n16
+              | u32 dates[nd] | u32 off4[nd+1] | u32 off8[nd+1] | u32 off16[nd+1]
+              | u16 idx4[n4]  | u16 idx8[n8]  | u16 idx16[n16]
     """
     cal = tdx.trading_calendar(start=RANDOM_FROM, end=RANDOM_TO)
     dates = [int(d) for d in cal]
     axis = {"dates": dates, "lo": RANDOM_FROM, "hi": RANDOM_TO}
     nd = len(dates)
-    lists = {4: [[] for _ in range(nd)], 16: [[] for _ in range(nd)]}
+    BITS = (4, 8, 16)
+    lists = {b: [[] for _ in range(nd)] for b in BITS}
     t0 = time.time()
-    for r, s in enumerate(stocks):
-        code = s[0] if isinstance(s, list) else s
+    for r, code in enumerate(stocks):
         m = filter_masks(code, axis, out_dir)
-        for bit in (4, 16):
-            hit = np.nonzero(m & bit)[0]
-            for k in hit:
-                lists[bit][int(k)].append(r)
-        if (r + 1) % 1000 == 0:
+        for b in BITS:
+            for k in np.nonzero(m & b)[0]:
+                lists[b][int(k)].append(r)
+        if (r + 1) % 1500 == 0:
             print(f"      filter {r+1}/{len(stocks)} {time.time()-t0:.0f}s")
 
-    off3 = [0]; idx3 = []
-    for k in range(nd):
-        idx3.extend(lists[4][k]); off3.append(len(idx3))
-    off5 = [0]; idx5 = []
-    for k in range(nd):
-        idx5.extend(lists[16][k]); off5.append(len(idx5))
+    flat, offs = {}, {}
+    for b in BITS:
+        arr, off = [], [0]
+        for k in range(nd):
+            arr.extend(lists[b][k]); off.append(len(arr))
+        flat[b], offs[b] = arr, off
 
     buf = io.BytesIO()
-    buf.write(b"KLF1")
-    buf.write(np.array([nd, len(idx3), len(idx5)], "<u4").tobytes())
+    buf.write(b"KLF2")
+    buf.write(np.array([nd] + [len(flat[b]) for b in BITS], "<u4").tobytes())
     buf.write(np.array(dates, "<u4").tobytes())
-    buf.write(np.array(off3, "<u4").tobytes())
-    buf.write(np.array(off5, "<u4").tobytes())
-    buf.write(np.array(idx3, "<u2").tobytes())
-    buf.write(np.array(idx5, "<u2").tobytes())
+    for b in BITS:
+        buf.write(np.array(offs[b], "<u4").tobytes())
+    for b in BITS:
+        buf.write(np.array(flat[b], "<u2").tobytes())
     blob = buf.getvalue()
     with open(os.path.join(out_dir, "filter.bin"), "wb") as f:
         f.write(blob)
-    print(f"      筛选索引 {nd} 天 / C3 {len(idx3):,} 条 / C5 {len(idx5):,} 条 "
-          f"-> filter.bin ({len(blob)/1e6:.2f} MB, {time.time()-t0:.0f}s)")
-    return {"dates": nd, "c3": len(idx3), "c5": len(idx5), "bytes": len(blob)}
+    print(f"      筛选索引 {nd} 天 / " + " / ".join(f"C{b}:{len(flat[b]):,}" for b in BITS) +
+          f" -> filter.bin ({len(blob)/1e6:.2f} MB, {time.time()-t0:.0f}s)")
+    return {"dates": nd, **{f"c{b}": len(flat[b]) for b in BITS}, "bytes": len(blob)}
 
 
 def main():

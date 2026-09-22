@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>重生之K线股王 · K线训练营</title>
 <meta name="description" content="使用真实历史行情（前复权）逐日推演的 K 线交易训练营：随机股票 + 随机日期，次日开盘价成交，实时记录盈亏。">
-<link rel="stylesheet" href="css/app.css?v=20260922d">
+<link rel="stylesheet" href="css/app.css?v=20260922e">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230f172a'/%3E%3Crect x='14' y='20' width='8' height='26' fill='%23ef4444'/%3E%3Crect x='28' y='14' width='8' height='34' fill='%2322c55e'/%3E%3Crect x='42' y='24' width='8' height='24' fill='%23ef4444'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -99,11 +99,13 @@
       <div class="hint" id="sf-now">—</div>
       <div class="dd hidden" id="filter-dd">
         <div class="dd-title">换股时只抽<b>同时满足</b>以下勾选项的标的（不勾 = 完全随机）</div>
-        <label class="dd-item"><input type="checkbox" data-bit="1" checked> 从近 60 日最高收盘回落 3%~15%</label>
-        <label class="dd-item"><input type="checkbox" data-bit="2" checked> 最近连续 2 天收盘上涨</label>
-        <label class="dd-item"><input type="checkbox" data-bit="4"> K 线实体高于前 2 日最高价</label>
-        <label class="dd-item"><input type="checkbox" data-bit="8"> K 线实体高于最近一个前期高点</label>
-        <label class="dd-item"><input type="checkbox" data-bit="16"> MACD 金叉（DIF 上穿 DEA）</label>
+        <label class="dd-item"><input type="checkbox" data-bit="1" checked> ① 从「最近一个前期高点」回落 3%~15%</label>
+        <label class="dd-item"><input type="checkbox" data-bit="2" checked> ② 最近连续 2 天收盘上涨</label>
+        <label class="dd-item"><input type="checkbox" data-bit="4"> ③ <b>阳线</b>实体跳空高于前 2 日最高价</label>
+        <label class="dd-item"><input type="checkbox" data-bit="8"> ④ <b>阳线</b>实体突破「最近一个前期高点」</label>
+        <label class="dd-item"><input type="checkbox" data-bit="16"> ⑤ MACD <b>零下</b>金叉（DIF 上穿 DEA 且 DIF&lt;0）</label>
+        <div class="dd-hint">「最近一个前期高点」= 前后各 5 根 K 线里的最高价（分形），取最近一个已走完的</div>
+        <div class="dd-warn hidden" id="dd-warn"></div>
         <div class="dd-foot">抽不到就是当天全市场没有同时满足的票，<b>不会自动放宽</b>。</div>
       </div>
       <div class="btn-row">
@@ -215,11 +217,12 @@
       <li>成交价触及涨停买不进、触及跌停卖不出（主板 ±10%，创业板/科创板 ±20%）。</li>
       <li>操作满 30 / 60 / 90 个交易日后自动结算，剩余持仓按最后一日收盘价折算。</li>
       <li>「结束交易」：尾盘模式按当收即时清仓；次日开盘价模式放弃今日委托、按次日开盘价清仓。</li>
-      <li><b>换股筛选</b>（只作用于「换一只股票」，不影响开局随机抽样）：点侧栏「筛选」按钮勾选条件，
-        只抽<b>同时满足全部勾选项</b>的标的。五个条件（均可单独开关，一条不勾 = 完全随机）：
-        <b>① 从近 60 日最高收盘回落 3%~15%；② 最近连续 2 天收盘上涨；
-        ③ K 线实体高于前 2 日最高价；④ K 线实体高于最近一个前期高点（前后各 3 根的分形高点）；
-        ⑤ MACD 金叉（DIF 上穿 DEA）</b>。抽不到就是当天全市场没有满足的票，不会自动放宽。</li>
+      <li><b>换股筛选</b>（只作用于「换一只股票」）：点侧栏「筛选」按钮勾选条件，只抽<b>同时满足全部勾选项</b>的标的。
+        <b>① 从「最近一个前期高点」回落 3%~15%；② 最近连续 2 天上涨；
+        ③ 当日<b>收阳</b>且开盘价高于前 2 日最高价（真跳空，绿柱不算）；
+        ④ 当日<b>收阳</b>且开盘价突破「最近一个前期高点」；⑤ MACD <b>零下</b>金叉（DIF 上穿 DEA 且 DIF&lt;0）</b>。
+        「最近一个前期高点」= 前后各 5 根 K 线里的最高价（分形法，取最近一个已走完的）。
+        一条不勾 = 完全随机；抽不到不放宽。<b>注意 ① 与 ④ 互斥</b>（一个要求在前高下方、一个要求突破前高），同时勾选永远抽不到。</li>
       <li><b>空仓换股</b>：未持股、且还有剩余交易日时，可以<b>无限次</b>点「换一只股票」换标的；
         换股后日期不变、已用交易日不变、本局结束日不变，旧标的的未成交委托会作废。</li>
       <li>结算时的对比基准是 <b>沪深300 指数</b>在该区间的涨跌幅（「跑赢沪深300」= 你的收益率 − 指数涨幅）。</li>
@@ -266,6 +269,6 @@
   </div>
 </div>
 
-<script type="module" src="js/app.js?v=20260922d"></script>
+<script type="module" src="js/app.js?v=20260922e"></script>
 </body>
 </html>
