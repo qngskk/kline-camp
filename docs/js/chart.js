@@ -38,7 +38,7 @@ export class KChart {
     this.hover = null;
     this.pad = { l: 8, r: 64, t: 10, b: 22 };
     this.drag = null;
-    this.maPeriods = [5, 10, 20];
+    this.maPeriods = [5, 10, 20, 60];
     this.showMA = true;
     this.lines = [];        // 手动画线，锚在「数据坐标」(bar 下标, 价格)，缩放平移后不会漂
     this.drawMode = false;
@@ -390,6 +390,12 @@ export class KChart {
       // 与真实成交额的中位偏差 0.2%、99 分位 1.7%（见 tools/verify_data.py）
       ['成交额≈', fmtAmount((b.high[i] + b.low[i] + b.close[i]) / 3 * b.vol[i]) + '元'],
     ];
+    if (this.showMA) {                       // 均线的值也列出来，方便直接读乖离
+      this.maPeriods.forEach((p, k) => {
+        const v = this.ma[k] ? this.ma[k][i] : NaN;
+        if (isFinite(v)) lines.push(['MA' + p, v.toFixed(2), MA_COLORS[k % MA_COLORS.length]]);
+      });
+    }
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     const w = 118, lh = 15, h = lines.length * lh + 10;
     let tx = x + 14;
@@ -400,10 +406,10 @@ export class KChart {
     ctx.lineWidth = 1;
     roundRect(ctx, tx, ty, w, h, 5); ctx.fill(); ctx.stroke();
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    lines.forEach(([k, v], n) => {
+    lines.forEach(([k, v, col], n) => {
       const y = ty + 5 + lh * n + lh / 2;
-      ctx.fillStyle = MUTED; ctx.fillText(k, tx + 8, y);
-      ctx.fillStyle = (k === '涨跌') ? (chg >= 0 ? UP : DOWN) : (k === '收盘' ? (up ? UP : DOWN) : TEXT);
+      ctx.fillStyle = col || MUTED; ctx.fillText(k, tx + 8, y);
+      ctx.fillStyle = col || ((k === '涨跌') ? (chg >= 0 ? UP : DOWN) : (k === '收盘' ? (up ? UP : DOWN) : TEXT));
       ctx.fillText(v, tx + 52, y);
     });
     ctx.textBaseline = 'alphabetic';

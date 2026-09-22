@@ -710,7 +710,7 @@ function bind() {
     const on = !state.chart.showMA;
     state.chart.setShowMA(on);
     $('btn-ma').classList.toggle('on', on);
-    toast(on ? '已显示均线 MA5 / MA10 / MA20' : '已关闭均线显示', 'info', 1600);
+    toast(on ? '已显示均线 MA5 / MA10 / MA20 / MA60' : '已关闭均线显示', 'info', 1600);
   });
 
   // 手动划线
