@@ -44,6 +44,7 @@ import time
 from collections import Counter
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -166,7 +167,7 @@ def build_bench(out_dir: str, index_code: str = "sh000300"):
 
 
 FILTER_LOOKBACK = 60
-FILTER_SWING_K = 5          # 分形高点：前后各 5 根（前后各 3 根会把反弹中的小高点误判为「前高」）
+FILTER_PRIOR_N = 20         # 「前期高点」= 近 20 根（不含当日）的最高价，≈一个月
 
 
 def _ema(x: np.ndarray, n: int) -> np.ndarray:
@@ -192,10 +193,10 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
     ⚠️ 必须用**前端看到的那份数据**（docs/data/*.bin 解码并取整到分），不能用原始 .day：
        MACD 的 EMA 以第一根为种子，是路径依赖的；用全历史算出来的金叉位置和前端会错开。
     位定义必须与 docs/js/sim.js 的 FILTER_DEFS 一致：
-      1  从「最近一个前期高点」回落 3%~15%
+      1  收盘价相对「前期高点」低 3%~15%
       2  最近连续 2 天收盘上涨
       4  当日收阳，且开盘价高于前 2 日最高价
-      8  当日收阳，且开盘价高于「最近一个前期高点」
+      8  当日收阳，且开盘价高于「前期高点」
       16 MACD 零下金叉（DIF 上穿 DEA 且 DIF < 0）
     """
     nd = len(axis["dates"])
@@ -219,17 +220,19 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
     dif = _ema(cl, 12) - _ema(cl, 26)
     dea = _ema(dif, 9)
 
-    K = FILTER_SWING_K
-    is_sw = np.zeros(n, dtype=bool)
-    for j in range(K, n - K):
-        if hi[j] >= hi[j - K:j + K + 1].max() - 1e-9:
-            is_sw[j] = True
-    last_sw = np.full(n, -1, dtype=np.int64)
-    cur = -1
-    for j in range(n):
-        if is_sw[j]:
-            cur = j
-        last_sw[j] = cur
+    # prior_hi[i] = max(hi[max(0,i-N):i])：近 N 根、**不含当日**的最高价
+    # 用区间最高价而不是分形拐点 —— 分形高点必须等右侧 k 根走完才能确认，
+    # 决策当天必然滞后（周大生 SZ002867 2026-01-15 真正的前高是 2 天前的 12.00，
+    # 分形法只能看到 3 周前的 11.68，于是误判为"突破"）。
+    N = FILTER_PRIOR_N
+    prior_hi = np.full(n, np.nan)
+    if n > 1:
+        cummax = np.maximum.accumulate(hi)
+        for i in range(1, min(N, n)):
+            prior_hi[i] = cummax[i - 1]
+        if n > N:
+            W = sliding_window_view(hi, N).max(axis=1)     # W[j] = max(hi[j:j+N])
+            prior_hi[N:] = W[:n - N]
 
     lo, hi_d = axis["lo"], axis["hi"]
     for k in range(nd):
@@ -239,12 +242,10 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
             continue
         if d < lo or d > hi_d:
             continue
-        sj = int(last_sw[i - K]) if i - K >= 0 else -1
-        if sj < max(K, i - FILTER_LOOKBACK):
-            sj = -1
+        ph = float(prior_hi[i]) if np.isfinite(prior_hi[i]) else np.nan
         v = 0
-        if sj >= 0:
-            dd = cl[i] / hi[sj] - 1
+        if np.isfinite(ph) and ph > 0:
+            dd = cl[i] / ph - 1
             if -0.15 <= dd <= -0.03:
                 v |= 1
         if cl[i] > cl[i - 1] > cl[i - 2]:
@@ -252,7 +253,7 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
         bullish = cl[i] > op[i]
         if bullish and op[i] > max(hi[i - 1], hi[i - 2]):
             v |= 4
-        if bullish and sj >= 0 and op[i] > hi[sj]:
+        if bullish and np.isfinite(ph) and op[i] > ph:
             v |= 8
         if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1] and dif[i] < 0:
             v |= 16
@@ -265,9 +266,9 @@ def build_filter(stocks, out_dir: str):
 
     给三个稀有条件建倒排表（实测通过率）：
         ③ 阳线实体超前2日高  2.3%
-        ④ 阳线实体破前高     7.6%
+        ④ 阳线实体破前高     0.6%
         ⑤ MACD 零下金叉      2.4%
-    ①(47.8%) ②(23%) 太常见，建表反而占空间，前端拿到候选后实时判定即可。
+    ①(57.6%) ②(23%) 太常见，建表反而占空间，前端拿到候选后实时判定即可。
     这样任意组合（含"全选"）都能一次锁定候选，不必盲抽。
 
     格式（全部小端）：

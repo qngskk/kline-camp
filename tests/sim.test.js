@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   Session, eligibleRange, windowGapOk, pickStartIndex, fracLabel,
-  macd, ema, swingHighIndex, filterDetail, filterHit, FILTER_DEFS, FILTER_ALL, FILTER_CONFLICTS,
+  macd, ema, priorHighIndex, filterDetail, filterHit, FILTER_DEFS, FILTER_ALL, FILTER_CONFLICTS,
+  PRIOR_HIGH_LOOKBACK,
   buyCost, sellProceeds, limitUpOf, limitDownOf, round2,
   PRE_BARS, MIN_LISTED, LOT_SIZE, FEE,
 } from '../docs/js/sim.js';
@@ -588,104 +589,96 @@ test('EMA / MACD 基础', () => {
   assert.ok(macd(dn).dif[99] < 0, '持续下跌 DIF 应为负');
 });
 
-test('swingHighIndex：最近一个分形高点（前后各 5 根）', () => {
-  const n = 160, K = 5;
-  const h = new Float64Array(n);
-  for (let i = 0; i < n; i++) h[i] = 20 - i * 0.05;   // 单调下滑：任何一根都不是分形高点
-  h[118] = 19; h[123] = 18;                            // 118 是大高点，123 是更近的小高点
-  const bars = { n, dates: new Int32Array(n), open: h.slice(), low: h.slice(), close: h.slice(),
-                 high: h, vol: new Float64Array(n) };
-  // 123 落在 118 的 ±5 根内，所以它不是分形高点 → 前高应为 118
-  assert.equal(swingHighIndex(bars, 130), 118, 'k=5：123 的小高点不算前高');
-  // 这正是之前 SH600851 判错的原因：k=3 会把这个小高点当成前高
-  assert.equal(swingHighIndex(bars, 130, 3), 123, 'k=3 会误判小高点');
-  // 分形高点要右侧走完 k 根才能确认
-  h[128] = 21;
-  assert.equal(swingHighIndex(bars, 134), 128, '128 右侧已有 5 根 → 可确认');
-  assert.equal(swingHighIndex(bars, 132), 118, '128 右侧只走了 4 根 → 还不能确认，退到 118');
-  // 找不到时返回 -1（单调下滑的序列没有分形高点）
-  const dec = Float64Array.from({ length: n }, (_, i) => 20 - i * 0.05);
-  const down = { n, dates: new Int32Array(n), open: dec.slice(), low: dec.slice(), close: dec.slice(),
-                 high: dec, vol: new Float64Array(n) };
-  assert.equal(swingHighIndex(down, 100), -1);
+test('priorHighIndex：「前期高点」= 近 20 根（不含当日）的最高价那根', () => {
+  const n = 60;
+  const mkB = (h) => ({ n, dates: new Int32Array(n), open: h.slice(), low: h.slice(),
+                        close: h.slice(), high: h, vol: new Float64Array(n) });
+  const h = new Float64Array(n).fill(10);
+  h[30] = 12; h[45] = 11; h[50] = 13;
+  const bars = mkB(h);
+  assert.equal(priorHighIndex(bars, 55, 20), 50, '窗口 [35,54] 内最高 13 在 50');
+  assert.equal(priorHighIndex(bars, 52, 20), 50);
+  assert.equal(priorHighIndex(bars, 49, 20), 30, '窗口 [29,48] 内最高是 30 的 12，45 的 11 更近但更小');
+  assert.equal(priorHighIndex(bars, 35, 20), 30);
+  // 不含当日：i=50 时就算当日最高 13，也不算进前高
+  assert.equal(priorHighIndex(bars, 50, 20), 30, '当日 13 不能算前高');
+  // 并列时取更近的那一根
+  const h2 = new Float64Array(n).fill(10); h2[20] = 12; h2[25] = 12;
+  assert.equal(priorHighIndex(mkB(h2), 30, 20), 25, '并列最高取最后一次出现');
+  assert.equal(priorHighIndex(bars, 0, 20), -1);
+  assert.equal(PRIOR_HIGH_LOOKBACK, 20, '回看根数默认 20');
 });
 
 test('filterDetail：五个条件逐条判定（用户指定的规则）', () => {
-  const n = 150, K = 5;
+  const n = 120;
   const mk = (fn) => {
     const o = new Float64Array(n), h = new Float64Array(n), l = new Float64Array(n), c = new Float64Array(n);
     for (let i = 0; i < n; i++) { const v = fn(i); o[i] = v.o; h[i] = v.h; l[i] = v.l; c[i] = v.c; }
     return { n, dates: new Int32Array(n).map((_, i) => 20240101 + i), open: o, high: h, low: l,
              close: c, vol: new Float64Array(n).fill(1e6) };
   };
-  // 公共背景：最高价从 20 单调下滑（保证只有 100 是分形高点），100 处放一个 18 的前高
-  const bg = (i, c, o) => {
-    const base = 20 - i * 0.05;
-    const h = i === 100 ? 18 : base;
-    return { o: o ?? c - 0.05, h, l: Math.min(c, o ?? c - 0.05) - 0.1, c };
-  };
-
-  // ① 从「最近一个前期高点」回落 3%~15%：前高 18，现价 17 → -5.6%
+  // ① 相对「前期高点」回落 3%~15%：前 69 根最高 10.2，现价 9.4 → -7.8%；且 9.0→9.2→9.4 连涨 2 天
   {
-    const b = mk(i => bg(i, i < 100 ? 20 - i * 0.05 - 0.1 : 17));
-    const d = filterDetail(b, 125);
-    assert.equal(d.swingIdx, 100, '最近前高应在 100 那根');
-    assert.equal(d.swingHigh, 18);
+    const b = mk(i => {
+      if (i === 69) return { o: 10, h: 10.2, l: 8.9, c: 9.0 };
+      if (i === 70) return { o: 9.1, h: 9.3, l: 9.0, c: 9.2 };
+      if (i >= 71) return { o: 9.3, h: 9.45, l: 9.15, c: 9.4 };
+      return { o: 10, h: 10.2, l: 9.9, c: 10 };
+    });
+    const d = filterDetail(b, 71);
+    assert.equal(d.priorHigh, 10.2, '前高应取近 20 根最高价');
     assert.equal(d.pullback, true, `回落 ${(d.dd * 100).toFixed(1)}% 应在 3%~15%`);
+    assert.equal(d.up2, true, '9.0 → 9.2 → 9.4 应按连涨 2 天成立');
+    assert.equal(d.gapBody, false, '开盘 9.3 未超过前 2 日最高 10.2');
+    assert.equal(d.aboveSwing, false);
   }
-  // ① 离前高太近（<3%）不算回踩
+  // ① 离前高太近（<3%）不算回踩；超过 15% 也不算
   {
-    const b = mk(i => bg(i, i < 100 ? 20 - i * 0.05 - 0.1 : 17.8));
-    assert.equal(filterDetail(b, 125).pullback, false, '只回落 1.1% 不算回踩');
+    const near = mk(i => (i >= 71 ? { o: 10.1, h: 10.3, l: 10.0, c: 10.15 }
+                                  : { o: 10, h: 10.2, l: 9.9, c: 10 }));
+    assert.equal(filterDetail(near, 71).pullback, false, '只回落 0.5% 不算回踩');
+    const deep = mk(i => (i >= 71 ? { o: 8.6, h: 8.7, l: 8.5, c: 8.6 }
+                                  : { o: 10, h: 10.2, l: 9.9, c: 10 }));
+    assert.equal(filterDetail(deep, 71).pullback, false, '回落 15.7% 超出范围');
   }
-  // ① 跌破前高超过 15% 不算
+  // ② 只涨 1 天不算
   {
-    const b = mk(i => bg(i, i < 100 ? 20 - i * 0.05 - 0.1 : 15.0));
-    assert.equal(filterDetail(b, 125).pullback, false, '回落 16.7% 超出范围');
+    const b = mk(i => (i === 70 ? { o: 9.6, h: 9.7, l: 9.5, c: 9.6 } : { o: 9.4, h: 9.6, l: 9.3, c: 9.5 }));
+    assert.equal(filterDetail(b, 71).up2, false, '前一天是跌的');
   }
-  // ② 连涨 2 天
+  // ③ 阳线实体跳空高于前 2 日最高价
   {
-    const b = mk(i => bg(i, i === 123 ? 16.6 : i === 124 ? 16.8 : i === 125 ? 17.0 : 17.0));
-    assert.equal(filterDetail(b, 125).up2, true);
-    const b2 = mk(i => bg(i, i === 124 ? 17.2 : 17.0));
-    assert.equal(filterDetail(b2, 125).up2, false, '前一天是跌的');
+    const b = mk(i => ({ o: 10.0, h: 10.2, l: 9.9, c: 10.1 }));
+    b.open[71] = 10.3; b.close[71] = 10.5; b.high[71] = 10.8;
+    assert.equal(filterDetail(b, 71).gapBody, true, '阳线且开盘 10.3 > 前两日最高 10.2');
+    b.open[71] = 10.3; b.close[71] = 10.1;
+    assert.equal(filterDetail(b, 71).bullish, false);
+    assert.equal(filterDetail(b, 71).gapBody, false, '高开低走（绿柱）不能算');
+    b.open[71] = 10.0; b.close[71] = 10.1;
+    assert.equal(filterDetail(b, 71).gapBody, false, '没高开在前两日最高之上');
   }
-  // ③ 阳线实体跳空高于前 2 日最高价（前两天最高 10.2）
+  // ④ 阳线实体突破「前期高点」（近 20 根最高 10.2）
   {
-    const flat = mk(i => ({ o: 10.05, h: 10.2, l: 10.0, c: 10.1 }));
-    flat.open[125] = 10.3; flat.close[125] = 10.5; flat.high[125] = 10.8;
-    assert.equal(filterDetail(flat, 125).gapBody, true, '阳线且开盘 10.3 > 前两日最高 10.2');
-    // 高开低走（绿柱）不算 —— 用户明确要求
-    flat.open[125] = 10.3; flat.close[125] = 10.1;
-    assert.equal(filterDetail(flat, 125).bullish, false);
-    assert.equal(filterDetail(flat, 125).gapBody, false, '高开低走不能算');
-    // 实体低于前两日最高不算
-    flat.open[125] = 10.0; flat.close[125] = 10.1;
-    assert.equal(filterDetail(flat, 125).gapBody, false);
+    const b = mk(i => ({ o: 10.0, h: 10.2, l: 9.9, c: 10.1 }));
+    b.open[71] = 10.3; b.close[71] = 10.5; b.high[71] = 10.8;
+    const d = filterDetail(b, 71);
+    assert.equal(d.priorHigh, 10.2);
+    assert.equal(d.aboveSwing, true, '阳线开盘 10.3 突破前高 10.2');
+    b.open[71] = 10.1; b.close[71] = 10.2;
+    assert.equal(filterDetail(b, 71).aboveSwing, false, '实体 10.1 没超过前高');
+    b.open[71] = 10.3; b.close[71] = 10.1;
+    assert.equal(filterDetail(b, 71).aboveSwing, false, '绿柱不能算突破');
   }
-  // ④ 阳线实体突破「最近一个前期高点」
+  // ① 与 ④ 互斥
   {
-    const b = mk(i => bg(i, i < 100 ? 20 - i * 0.05 - 0.1 : 18.6));
-    b.open[125] = 18.7; b.close[125] = 18.9; b.high[125] = 19.0;   // 阳线，开盘 18.7 > 前高 18
-    const d = filterDetail(b, 125);
-    assert.equal(d.swingHigh, 18);
-    assert.equal(d.aboveSwing, true, '开盘 18.7 高于前高 18');
-    b.open[125] = 17.8; b.close[125] = 17.9;
-    assert.equal(filterDetail(b, 125).aboveSwing, false, '实体 17.8 没超过前高 18');
-    // 高开低走也不算
-    b.open[125] = 18.7; b.close[125] = 18.5;
-    assert.equal(filterDetail(b, 125).aboveSwing, false, '绿柱不能算突破');
-  }
-  // ① 与 ④ 互斥：不能同时成立
-  {
-    const b = mk(i => bg(i, i < 100 ? 20 - i * 0.05 - 0.1 : 18.6));
-    b.open[125] = 18.7; b.close[125] = 18.9;
-    const d = filterDetail(b, 125);
+    const b = mk(i => ({ o: 10.0, h: 10.2, l: 9.9, c: 10.1 }));
+    b.open[71] = 10.3; b.close[71] = 10.5;
+    const d = filterDetail(b, 71);
     assert.equal(d.aboveSwing, true);
     assert.equal(d.pullback, false, '已突破前高就不可能同时处于「前高下方 3~15%」');
     assert.ok(FILTER_CONFLICTS.some(c => c.bits.includes(1) && c.bits.includes(8)));
   }
-  // ⑤ MACD「零下」金叉：先深跌再转涨，金叉必然出现在零轴下方
+  // ⑤ MACD「零下」金叉
   {
     const n2 = 200;
     const c = new Float64Array(n2);
@@ -705,7 +698,6 @@ test('filterDetail：五个条件逐条判定（用户指定的规则）', () =>
     if (above > 0) assert.equal(filterDetail(b, above, m).macdCross, false, '零上金叉不应命中');
     assert.ok(m.dif[below] < 0, `零下金叉时 DIF=${m.dif[below].toFixed(3)} 应 < 0`);
   }
-  // K 线不足 → 无法判定
   assert.equal(filterDetail(mk(i => ({ o: 10, h: 10, l: 10, c: 10 })), 10).ready, false);
 });
 

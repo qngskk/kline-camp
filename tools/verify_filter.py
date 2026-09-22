@@ -19,7 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-from tools.build_data import (FILTER_LOOKBACK, FILTER_SWING_K, RANDOM_FROM, RANDOM_TO,
+from tools.build_data import (FILTER_PRIOR_N, RANDOM_FROM, RANDOM_TO,
                               _ema, _r2, decode_pack)  # noqa: E402
 from src import tdx  # noqa: E402
 import numpy as np  # noqa: E402
@@ -34,21 +34,16 @@ def mask_of(code: str, date: int) -> int:
     if i >= n or int(dates[i]) != date or i < 70:
         return 0
     dif = _ema(cl, 12) - _ema(cl, 26); dea = _ema(dif, 9)
-    K = FILTER_SWING_K
-    sj = -1
-    for j in range(i - K, max(K, i - FILTER_LOOKBACK), -1):
-        if hi[j] >= hi[j - K:j + K + 1].max() - 1e-9:
-            sj = j
-            break
+    ph = float(hi[max(0, i - FILTER_PRIOR_N):i].max())
     v = 0
-    if sj >= 0 and -0.15 <= cl[i] / hi[sj] - 1 <= -0.03:
+    if -0.15 <= cl[i] / ph - 1 <= -0.03:
         v |= 1
     if cl[i] > cl[i - 1] > cl[i - 2]:
         v |= 2
     bullish = cl[i] > op[i]
     if bullish and op[i] > max(hi[i - 1], hi[i - 2]):
         v |= 4
-    if bullish and sj >= 0 and op[i] > hi[sj]:
+    if bullish and op[i] > ph:
         v |= 8
     if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1] and dif[i] < 0:
         v |= 16

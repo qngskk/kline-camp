@@ -468,15 +468,10 @@ await startSession();
 check(await page.evaluate(() => window.__kline.filterMask) === 3, '换股筛选默认应勾选前两条（mask=3）');
 const filterState = () => page.evaluate(() => {
   const s = window.__kline.session, c = s.bars.close, h = s.bars.high, i = s.cur;
-  let j = -1;
-  for (let k = i - 5; k >= Math.max(5, i - 60); k--) {
-    let ok = true;
-    for (let q = k - 5; q <= k + 5; q++) if (h[q] > h[k] + 1e-9) { ok = false; break; }
-    if (ok) { j = k; break; }
-  }
-  const dd = j >= 0 ? c[i] / h[j] - 1 : NaN;
+  const ph = Math.max(...Array.from(h.slice(Math.max(0, i - 20), i)));
+  const dd = c[i] / ph - 1;
   const up = c[i] > c[i - 1] && c[i - 1] > c[i - 2];
-  return { dd, up, pass: j >= 0 && dd >= -0.15 && dd <= -0.03 && up };
+  return { dd, up, pass: dd >= -0.15 && dd <= -0.03 && up };
 });
 let hits = 0, violates = 0;
 for (let k = 0; k < 6; k++) {
@@ -517,17 +512,12 @@ const condAt = () => page.evaluate(() => {
   const s = window.__kline.session, c = s.bars.close, o = s.bars.open, h = s.bars.high, i = s.cur;
   const m = window.__kline.chart.macdRes;
   let hi = -Infinity; for (let k = i - 59; k <= i; k++) hi = Math.max(hi, c[k]);
-  let j = -1;
-  for (let k = i - 5; k >= Math.max(5, i - 60); k--) {
-    let ok = true;
-    for (let q = k - 5; q <= k + 5; q++) if (h[q] > h[k] + 1e-9) { ok = false; break; }
-    if (ok) { j = k; break; }
-  }
-  const dd = j >= 0 ? c[i] / h[j] - 1 : NaN;
-  return { code: s.stock.code, dd, pullback: j >= 0 && dd >= -0.15 && dd <= -0.03,
+  const ph = Math.max(...Array.from(h.slice(Math.max(0, i - 20), i)));
+  const dd = c[i] / ph - 1;
+  return { code: s.stock.code, dd, pullback: dd >= -0.15 && dd <= -0.03,
            up2: c[i] > c[i - 1] && c[i - 1] > c[i - 2],
            gapBody: c[i] > o[i] && o[i] > Math.max(h[i - 1], h[i - 2]),
-           aboveSwing: c[i] > o[i] && j >= 0 && o[i] > h[j],
+           aboveSwing: c[i] > o[i] && o[i] > ph,
            macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] && m.dif[i] < 0 };
 });
 const setFilter = async (bits) => {
