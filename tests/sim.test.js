@@ -565,6 +565,33 @@ test('有持仓 / 已无剩余交易日 时不能换股', () => {
   assert.equal(s.switchStock({ bars: bars2, stock: STOCK2, curIdx: s.cur }).ok, false, '没剩余交易日不能换');
 });
 
+test('标的行情提前走完时：进入下一日停住，但换股仍可用（否则死局）', () => {
+  const bars = makeBars(220, { seed: 11 });
+  const st = { code: 'sz000001', name: 'X', boardIdx: 0 };
+  const s = new Session({ bars, stock: st, startIdx: 60, horizon: 30, capital: 1e5, fees: false });
+  // 把 lastIdx 强行压到当前下标：模拟行情在本局结束日之前就断了
+  const endKeep = s.endDate;
+  s.lastIdx = s.cur;
+  assert.equal(s.canAct, false, '没有下一根就不能操作');
+  assert.equal(s.outOfData, true, '应进入「行情走完」状态');
+  assert.equal(s.finished, false, '还没结算');
+  assert.equal(s.canSwitch, true, '必须还能换股，否则卡死无解');
+  // 有持仓时不能换（换股等于凭空换标的）
+  s.shares = 100; s.costTotal = 1000;
+  assert.equal(s.canSwitch, false);
+  s.shares = 0; s.costTotal = 0;
+  // 换到一只行情没覆盖到结束日的标的 → 必须拒绝
+  const short = makeBars(70, { seed: 22 });
+  const r = s.switchStock({ bars: short, stock: { code: 'sz000002', name: 'Y', boardIdx: 0 }, curIdx: 60 });
+  assert.equal(r.ok, false, '行情没覆盖到本局结束日的标的不允许换入');
+  assert.equal(r.code, 'outOfData');
+  // 覆盖到结束日的可以换
+  const bars2 = makeBars(220, { seed: 33 }); bars2.dates.set(bars.dates);
+  const r2 = s.switchStock({ bars: bars2, stock: { code: 'sz000003', name: 'Z', boardIdx: 0 }, curIdx: s.cur });
+  assert.equal(r2.ok, true);
+  assert.ok(s.bars.dates[s.lastIdx] <= endKeep || s.lastIdx === s.cur, '换股后结束日不应超出本局结束日');
+});
+
 test('换股会作废旧标的的未成交委托', () => {
   const bars = makeBars(220, { seed: 11 });
   const bars2 = makeBars(220, { seed: 22 }); bars2.dates.set(bars.dates);

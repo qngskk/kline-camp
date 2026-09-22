@@ -181,6 +181,10 @@ export class Session {
   /** 委托篮里已排队的卖出股数 */
   get queuedSellShares() { return this.pending.filter(o => o.side === 'sell').reduce((a, o) => a + o.shares, 0); }
   get canAct() { return !this.finished && this.day < this.horizon && this.cur < this.lastIdx; }
+  /** 标的行情在本局结束日之前就用完了（停牌 / 退市 / 数据断档）→ 无法再推进 */
+  get outOfData() { return !this.finished && this.day < this.horizon && this.cur >= this.lastIdx; }
+  /** 能否换股：未持股，且「还能操作」或「当前标的已走完」（后者是唯一逃出死局的出口） */
+  get canSwitch() { return !this.finished && this.shares === 0 && (this.canAct || this.outOfData); }
   get nextDate() { return this.cur < this.lastIdx ? this.bars.dates[this.cur + 1] : null; }
   get progress() { return this.day / this.horizon; }
   get daysLeft() { return Math.max(0, this.horizon - this.day); }
@@ -415,8 +419,13 @@ export class Session {
   /** 空仓换股：把本局切到另一只标的，账目与已用交易日不变，结束交易日也不变。
    *  只有空仓时允许（有持仓换股等于凭空换标的，不合理）。 */
   switchStock({ bars, stock, curIdx }) {
+    // 新标的必须覆盖到本局结束日，否则换过去就再也推不动了
+    if (bars.dates[bars.n - 1] < this.endDate) {
+      return { ok: false, code: 'outOfData', msg: '该标的行情未覆盖到本局结束日' };
+    }
     if (this.shares > 0) return { ok: false, msg: '有持仓时不能换股' };
-    if (!this.canAct) return { ok: false, msg: '本轮已无剩余交易日' };
+    // 注意：outOfData（本标的行情提前走完）时必须放行，否则进度停在 N/90 就彻底死局
+    if (!this.canAct && !this.outOfData) return { ok: false, msg: '本轮已无剩余交易日' };
     const from = { code: this.stock.code, name: this.stock.name };
     this.bars = bars;
     this.stock = stock;

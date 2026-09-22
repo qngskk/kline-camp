@@ -561,6 +561,38 @@ if (a5 > b5) {
 }
 await shot('15-filter5');
 
+console.log('9e. 标的行情提前走完（卡死）时的兜底 + 诊断导出');
+await setFilter([]);                                   // 关筛选，避免换股抽不到影响本步
+const stuck = await page.evaluate(() => {
+  const s = window.__kline.session;
+  s.lastIdx = s.cur;                                   // 模拟行情在本局结束日之前就断了
+  window.__kline.renderAll();
+  return {
+    canAct: s.canAct, outOfData: s.outOfData, canSwitch: s.canSwitch, day: s.day, horizon: s.horizon,
+    nextDisabled: document.getElementById('btn-next').disabled,
+    switchDisabled: document.getElementById('btn-switch').disabled,
+    hint: document.getElementById('act-hint').innerText.replace(/\s+/g, ' '),
+  };
+});
+console.log('   状态:', JSON.stringify({ day: stuck.day, horizon: stuck.horizon, canAct: stuck.canAct, outOfData: stuck.outOfData }));
+check(stuck.canAct === false && stuck.outOfData === true, '应进入「行情走完」状态');
+check(stuck.nextDisabled === true, '进入下一日应禁用');
+check(stuck.switchDisabled === false, '换一只股票必须仍可用，否则进度停在 N/90 就死局了');
+check(/行情在本局结束日/.test(stuck.hint), '应给出明确原因，而不是默默变灰');
+const before9e = await page.evaluate(() => window.__kline.session.switches.length);
+await page.click('#btn-switch'); await wait(1200);
+const after9e = await page.evaluate(() => ({
+  n: window.__kline.session.switches.length,
+  canAct: window.__kline.session.canAct, outOfData: window.__kline.session.outOfData,
+  lastIdx: window.__kline.session.lastIdx, cur: window.__kline.session.cur,
+}));
+console.log('   换股后:', JSON.stringify(after9e));
+check(after9e.n > before9e, '卡死状态下必须能换股逃出');
+check(after9e.canAct === true && after9e.outOfData === false, '换股后应恢复正常推进');
+const dump = await page.evaluate(() => window.__kline.report());
+check(/"outOfData"/.test(dump) && /"lastBarDate"/.test(dump), '诊断信息应包含 outOfData / lastBarDate');
+console.log('   诊断导出字段:', Object.keys(JSON.parse(dump)).join(', '));
+
 console.log('10. 移动端布局');
 await page.click('#btn-restart');
 await page.setViewport({ width: 390, height: 844, deviceScaleFactor: 2 });

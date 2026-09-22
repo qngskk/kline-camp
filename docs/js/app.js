@@ -318,7 +318,7 @@ function renderAll(fit = false) {
   $('act-sellable').className = sellable <= 0 ? 'down' : '';
   $('btn-next').disabled = !canAct;
   $('btn-end').disabled = s.finished;
-  $('btn-switch').disabled = !canAct || s.shares > 0;
+  $('btn-switch').disabled = !s.canSwitch;
 
   const pend = $('pending-box');
   if (s.pending.length) {
@@ -351,7 +351,12 @@ function renderAll(fit = false) {
 
   $('act-hint').innerHTML = s.finished
     ? '本轮已结束。'
-    : s.pending.length
+    : s.outOfData
+      ? `<span class="down">⚠️ 当前标的的行情在本局结束日（<b>${fmtDate(s.endDate)}</b>）之前就用完了` +
+        `（停牌 / 退市 / 数据断档），没法再「进入下一日」。</span><br>` +
+        `进度停在 <b>${s.day}/${s.horizon}</b> 天。可以点 <b>换一只股票</b> 换个标的继续，` +
+        `或点 <b>结束交易并结算</b> 直接结算。`
+      : s.pending.length
       ? `已挂 <b>${s.pending.length}</b> 笔委托：点「进入下一日」时<b>按输入顺序</b>一次成交；` +
         `成交前都可以点标签上的 × 撤销。`
       : s.fillMode === 'close'
@@ -456,6 +461,7 @@ async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
     let j = i;
     for (let t = i; t < bars.n; t++) { if (bars.dates[t] > endDate) break; j = t; }
     if (j <= i) return null;                         // 到结束日之前没有行情
+    if (bars.dates[bars.n - 1] < endDate) return null;   // 行情没覆盖到本局结束日 → 换过去就卡死
     structural++;
     if (want && !filterHit(maskAt(bars, i), want)) { filtered++; return null; }
     return { bars, stock: { code: st.code, name: st.name, boardIdx: st.boardIdx }, cur: i };
@@ -515,7 +521,7 @@ async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
 
 function doSwitch() {
   const s = state.session;
-  if (!s || !s.canAct || s.shares > 0) return;
+  if (!s || !s.canSwitch) return;                  // 含「行情走完」状态，否则会死局
   const btn = $('btn-switch');
   btn.disabled = true; btn.textContent = '换股中…';
   const avoid = s.switches.slice(-120).map(x => x.to);   // 本局换过的尽量不重复
@@ -523,6 +529,7 @@ function doSwitch() {
     btn.disabled = false; btn.textContent = '换一只股票';
     if (!pick || pick.fail) {
       const p = pick || {};
+      if (p.code === 'outOfData') { toast(p.msg + '，换一只再试', 'warn', 2600); return; }
       const names = FILTER_DEFS.filter(d => (state.filterMask & d.bit)).map(d => d.short).join(' + ');
       toast(state.filterMask
         ? `<b>${fmtDate(s.date)}</b> 这天` +
@@ -951,7 +958,41 @@ async function init() {
   });
 
   state.chart = new KChart($('chart'));
-  window.__kline = state;        // 调试/自动化测试钩子：__kline.chart / __kline.session
+  // 诊断导出：出问题时把这段 JSON 贴给我即可定位
+state.errors = [];
+function klineDump() {
+  const s = state.session, c = state.chart;
+  const j = (v) => { try { return JSON.parse(JSON.stringify(v)); } catch (e) { return String(v); } };
+  return JSON.stringify({
+    version: (document.querySelector('script[src*="app.js"]') || {}).src || '?',
+    ua: navigator.userAgent,
+    now: new Date().toISOString(),
+    boot: j(state.boot || null),
+    session: s ? {
+      stock: s.stock, day: s.day, horizon: s.horizon, cur: s.cur, lastIdx: s.lastIdx,
+      date: s.date, endDate: s.endDate, nBars: s.bars.n, lastBarDate: s.bars.dates[s.bars.n - 1],
+      finished: s.finished, canAct: s.canAct, outOfData: s.outOfData, canSwitch: s.canSwitch,
+      shares: s.shares, cash: +s.cash.toFixed(2), equity: +s.equity.toFixed(2),
+      returnPct: +(s.returnPct * 100).toFixed(2),
+      fillMode: s.fillMode, pending: j(s.pending), pendingN: s.pending.length,
+      switches: s.switches.length, switchList: j(s.switches.slice(-10)),
+      logN: s.log.length, marksN: s.marks.length,
+    } : null,
+    filterMask: state.filterMask,
+    filterIndex: state.findex ? 'loaded' : (state.findexFailed ? 'FAILED' : 'not-loaded'),
+    chart: c ? { viewFrom: c.viewFrom, viewTo: c.viewTo, showMA: c.showMA, showMACD: c.showMACD,
+                 linesN: (c.lines || []).length } : null,
+    errors: j(state.errors.slice(-10)),
+  }, null, 1);
+}
+window.__kline = state;
+window.__kline.dump = klineDump;
+window.__kline.renderAll = () => renderAll(false);   // 调试用：强制刷新界面
+window.__kline.report = () => { const t = klineDump(); console.log(t);
+  if (navigator.clipboard) navigator.clipboard.writeText(t).then(
+    () => toast('诊断信息已复制到剪贴板，直接粘贴给我即可', 'ok', 3200),
+    () => toast('复制失败，请在 Console 里手动复制 __kline.dump() 的输出', 'warn', 5000));
+  return t; };        // 调试/自动化测试钩子：__kline.chart / __kline.session
   bind();
   updateFillHint();
   try {
