@@ -165,18 +165,161 @@ def build_bench(out_dir: str, index_code: str = "sh000300"):
     return obj
 
 
+FILTER_LOOKBACK = 60
+
+
+def _ema(x: np.ndarray, n: int) -> np.ndarray:
+    """与前端 sim.js 的 ema() 完全同口径（首值做种子）"""
+    a = 2.0 / (n + 1)
+    out = np.empty(x.size, dtype="f8")
+    prev = float(x[0])
+    for i in range(x.size):
+        prev = float(x[0]) if i == 0 else a * x[i] + (1 - a) * prev
+        out[i] = prev
+    return out
+
+
+def _r2(x):
+    """与前端 decode.js 完全一致的四舍五入到分（JS Math.round 是「半数进位」，
+    numpy 默认是「半数取偶」，必须自己实现，否则边界值会不一致）"""
+    return np.floor(x * 100.0 + 0.5) / 100.0
+
+
+def filter_masks(code: str, axis: dict, out_dir: str = None):
+    """算出一只标的在「可抽日期轴」上每天的筛选位掩码。
+
+    ⚠️ 必须用**前端看到的那份数据**（docs/data/*.bin 解码并取整到分），不能用原始 .day：
+       MACD 的 EMA 以第一根为种子，是路径依赖的；用全历史（1999 起）算出来的
+       金叉位置和前端（只有窗口内 60+ 根）算出来的会错开。
+    位定义必须与 docs/js/sim.js 的 FILTER_DEFS 一致：
+      1 回落3~15%  2 连涨2天  4 实体超前2日最高  8 实体破前高  16 MACD金叉
+    """
+    nd = len(axis["dates"])
+    m = np.zeros(nd, dtype=np.uint8)
+    if out_dir:
+        p = os.path.join(out_dir, code[2:] + ".bin")
+        if not os.path.isfile(p):
+            return m
+        d = decode_pack(open(p, "rb").read())
+        cl = _r2(d["close"]); op = _r2(d["open"]); hi = _r2(d["high"])
+        dates = d["dates"].astype("i8")
+    else:
+        rec = tdx.read_day(code)
+        if rec.size == 0:
+            return m
+        cl = rec["close"].astype("f8"); op = rec["open"].astype("f8"); hi = rec["high"].astype("f8")
+        dates = rec["date"].astype("i8")
+    n = cl.size
+    if n < 200:
+        return m
+    dif = _ema(cl, 12) - _ema(cl, 26)
+    dea = _ema(dif, 9)
+    # 分形高点（前后各 3 根）：预计算「上一个摆动高点下标」，避免逐日重复扫描
+    is_sw = np.zeros(n, dtype=bool)
+    for j in range(3, n - 3):
+        if hi[j] >= hi[j - 3:j + 4].max() - 1e-9:
+            is_sw[j] = True
+    last_sw = np.full(n, -1, dtype=np.int64)
+    cur = -1
+    for j in range(n):
+        if is_sw[j]:
+            cur = j
+        last_sw[j] = cur
+
+    lo, hi_d = axis["lo"], axis["hi"]
+    for k in range(nd):
+        d = axis["dates"][k]
+        i = int(np.searchsorted(dates, d))
+        if i >= n or int(dates[i]) != d or i < 65:
+            continue
+        if d < lo or d > hi_d:
+            continue
+        v = 0
+        dd = cl[i] / cl[i - FILTER_LOOKBACK + 1:i + 1].max() - 1
+        if -0.15 <= dd <= -0.03:
+            v |= 1
+        if cl[i] > cl[i - 1] > cl[i - 2]:
+            v |= 2
+        body_lo = min(op[i], cl[i])
+        if body_lo > max(hi[i - 1], hi[i - 2]):
+            v |= 4
+        j = int(last_sw[i - 3])
+        if j >= max(3, i - FILTER_LOOKBACK) and body_lo > hi[j]:
+            v |= 8
+        if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1]:
+            v |= 16
+        m[k] = v
+    return m
+
+
+def build_filter(stocks, out_dir: str):
+    """生成 docs/data/filter.bin —— 「换股筛选」的倒排索引。
+
+    只给最稀有的两个条件 ③实体超前2日最高(3%)、⑤MACD金叉(4%) 建倒排表；
+    其余三个条件通过率高（46%/23%/13%），前端拿到候选后再实时判定即可。
+    这样「五个条件全选」（全市场 0.02%）也能一次抽到。
+    格式（全部小端）：
+        'KLF1' | u32 nd | u32 n3 | u32 n5 | u32 dates[nd] | u32 off3[nd+1] | u32 off5[nd+1]
+              | u16 idx3[n3] | u16 idx5[n5]
+    """
+    cal = tdx.trading_calendar(start=RANDOM_FROM, end=RANDOM_TO)
+    dates = [int(d) for d in cal]
+    axis = {"dates": dates, "lo": RANDOM_FROM, "hi": RANDOM_TO}
+    nd = len(dates)
+    lists = {4: [[] for _ in range(nd)], 16: [[] for _ in range(nd)]}
+    t0 = time.time()
+    for r, s in enumerate(stocks):
+        code = s[0] if isinstance(s, list) else s
+        m = filter_masks(code, axis, out_dir)
+        for bit in (4, 16):
+            hit = np.nonzero(m & bit)[0]
+            for k in hit:
+                lists[bit][int(k)].append(r)
+        if (r + 1) % 1000 == 0:
+            print(f"      filter {r+1}/{len(stocks)} {time.time()-t0:.0f}s")
+
+    off3 = [0]; idx3 = []
+    for k in range(nd):
+        idx3.extend(lists[4][k]); off3.append(len(idx3))
+    off5 = [0]; idx5 = []
+    for k in range(nd):
+        idx5.extend(lists[16][k]); off5.append(len(idx5))
+
+    buf = io.BytesIO()
+    buf.write(b"KLF1")
+    buf.write(np.array([nd, len(idx3), len(idx5)], "<u4").tobytes())
+    buf.write(np.array(dates, "<u4").tobytes())
+    buf.write(np.array(off3, "<u4").tobytes())
+    buf.write(np.array(off5, "<u4").tobytes())
+    buf.write(np.array(idx3, "<u2").tobytes())
+    buf.write(np.array(idx5, "<u2").tobytes())
+    blob = buf.getvalue()
+    with open(os.path.join(out_dir, "filter.bin"), "wb") as f:
+        f.write(blob)
+    print(f"      筛选索引 {nd} 天 / C3 {len(idx3):,} 条 / C5 {len(idx5):,} 条 "
+          f"-> filter.bin ({len(blob)/1e6:.2f} MB, {time.time()-t0:.0f}s)")
+    return {"dates": nd, "c3": len(idx3), "c5": len(idx5), "bytes": len(blob)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(ROOT, "docs", "data"))
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 只（调试用）")
     ap.add_argument("--no-cache", action="store_true", help="不使用复权因子 npz 缓存")
     ap.add_argument("--bench-only", action="store_true", help="只重建基准指数 bench.json")
+    ap.add_argument("--filter-only", action="store_true", help="只重建筛选索引 filter.bin")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     t0 = time.time()
     if args.bench_only:
         build_bench(args.out)
+        return
+    if args.filter_only:
+        idx_p = os.path.join(args.out, "index.json")
+        with open(idx_p, encoding="utf-8") as f:
+            stocks = [s[0] for s in json.load(f)["stocks"]]
+        build_filter(stocks, args.out)
         return
     names = load_names()
     print(f"[1/3] 名称表 {len(names)} 条")
@@ -266,6 +409,7 @@ def main():
         json.dump(index, f, ensure_ascii=False, separators=(",", ":"))
 
     build_bench(args.out)
+    filter_stat = build_filter([s[0] for s in stocks], args.out)
 
     total_bytes = sum(os.path.getsize(os.path.join(args.out, s[0][2:] + ".bin")) for s in stocks)
     manifest = {
@@ -277,6 +421,7 @@ def main():
         "max_vol_err": stats["max_vol_err"],
         "skipped": dict(skipped),
         "index_bytes": os.path.getsize(os.path.join(args.out, "index.json")),
+        "filter": filter_stat,
         "elapsed_s": round(time.time() - t0, 1),
     }
     with open(os.path.join(args.out, "manifest.json"), "w", encoding="utf-8") as f:

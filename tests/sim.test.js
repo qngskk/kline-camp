@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   Session, eligibleRange, windowGapOk, pickStartIndex, fracLabel,
-  switchFilterOk, switchFilterDetail, SWITCH_FILTER,
+  macd, ema, swingHighIndex, filterDetail, filterHit, FILTER_DEFS, FILTER_ALL,
   buyCost, sellProceeds, limitUpOf, limitDownOf, round2,
   PRE_BARS, MIN_LISTED, LOT_SIZE, FEE,
 } from '../docs/js/sim.js';
@@ -577,60 +577,109 @@ test('换股会作废旧标的的未成交委托', () => {
   assert.equal(n.fills.length, 0, '旧委托不应在新标的上成交');
 });
 
-test('换股筛选：回落 3%~15% + 连涨 2 天（用户指定条件）', () => {
-  const n = 200;
-  const mk = (closes) => {
-    const c = new Float64Array(n).fill(10);
-    closes.forEach(([i, v]) => { c[i] = v; });
-    return { n, dates: new Int32Array(n).map((_, i) => 20240101 + i),
-             open: c.slice(), high: c.slice(), low: c.slice(), close: c, vol: new Float64Array(n).fill(1e6) };
+test('EMA / MACD 基础', () => {
+  const flat = new Float64Array(100).fill(10);
+  assert.ok(Math.abs(ema(flat, 12)[99] - 10) < 1e-9, '常数序列的 EMA 应等于该常数');
+  const m0 = macd(flat);
+  assert.ok(Math.abs(m0.dif[99]) < 1e-9 && Math.abs(m0.dea[99]) < 1e-9 && Math.abs(m0.hist[99]) < 1e-9);
+  const up = new Float64Array(100).map((_, i) => 10 + i * 0.1);
+  assert.ok(macd(up).dif[99] > 0, '持续上涨 DIF 应为正');
+  const dn = new Float64Array(100).map((_, i) => 30 - i * 0.1);
+  assert.ok(macd(dn).dif[99] < 0, '持续下跌 DIF 应为负');
+});
+
+test('swingHighIndex：最近一个「前后各 3 根」的分形高点', () => {
+  const n = 130;
+  const h = new Float64Array(n);
+  for (let i = 0; i < n; i++) h[i] = 20 - i * 0.05;   // 单调下滑，避免并列
+  h[80] = 30; h[100] = 25;
+  const bars = { n, dates: new Int32Array(n), open: h.slice(), low: h.slice(), close: h.slice(),
+                 high: h, vol: new Float64Array(n) };
+  assert.equal(swingHighIndex(bars, 110), 100, '最近的一个已完成高点');
+  assert.equal(swingHighIndex(bars, 104), 100);
+  h[101] = 26;
+  assert.equal(swingHighIndex(bars, 110), 101, '更近的新高点应被识别');
+  // 只用已完成的高点：i=102 时 101 还没走完 3 根，不能算
+  h[101] = 20 - 101 * 0.05;
+  assert.equal(swingHighIndex(bars, 103), 100);
+});
+
+test('filterDetail：五个条件逐条判定（用户指定的规则）', () => {
+  const n = 130;
+  const mk = (fn) => {
+    const o = new Float64Array(n), h = new Float64Array(n), l = new Float64Array(n), c = new Float64Array(n);
+    for (let i = 0; i < n; i++) { const v = fn(i); o[i] = v.o; h[i] = v.h; l[i] = v.l; c[i] = v.c; }
+    return { n, dates: new Int32Array(n).map((_, i) => 20240101 + i), open: o, high: h, low: l,
+             close: c, vol: new Float64Array(n).fill(1e6) };
   };
-  // ① 高点 10、最近三天 9.0→9.2→9.4（回落 6%，连涨 2 天）→ 通过
+  // ① 回落：60 日内最高收盘 10，现价 9.4 → -6%，在 3%~15% 内；且 9.0→9.2→9.4 连涨 2 天
   {
-    const b = mk([[69, 9.0], [70, 9.2], [71, 9.4]]);
-    const d = switchFilterDetail(b, 71);
-    assert.equal(d.inRange, true, `回落 ${(d.dd * 100).toFixed(1)}% 应在 [-15%,-3%]`);
-    assert.equal(d.up, true, '9.2→9.4 应为连涨');
-    assert.equal(switchFilterOk(b, 71), true);
+    const b = mk(i => {
+      if (i === 68) return { o: 10, h: 10, l: 9.7, c: 9.8 };
+      if (i === 69) return { o: 9.8, h: 9.8, l: 8.9, c: 9.0 };
+      if (i === 70) return { o: 9.1, h: 9.3, l: 9.0, c: 9.2 };
+      if (i === 71) return { o: 9.3, h: 9.45, l: 9.15, c: 9.4 };
+      return { o: 10, h: 10, l: 10, c: 10 };
+    });
+    const d = filterDetail(b, 71);
+    assert.equal(d.ready, true);
+    assert.equal(d.pullback, true, `回落 ${(d.dd * 100).toFixed(1)}% 应在 3%~15%`);
+    assert.equal(d.up2, true, '9.0 → 9.2 → 9.4 应按连涨 2 天成立');
+    assert.equal(d.gapBody, false, '实体 9.3 未超过前 2 日最高 9.8');
   }
-  // ② 只涨 1 天（9.6→9.4→9.6）→ 不通过
+  // ② 连涨 2 天：只涨 1 天不成立
   {
-    const b = mk([[69, 9.6], [70, 9.4], [71, 9.6]]);
-    const d = switchFilterDetail(b, 71);
-    assert.equal(d.inRange, true);
-    assert.equal(d.up, false, '前一天是跌的，不算连涨 2 天');
-    assert.equal(switchFilterOk(b, 71), false);
+    const b = mk(i => (i >= 69 ? { o: 10, h: 10.5, l: 9, c: i === 69 ? 9.6 : i === 70 ? 9.4 : 9.6 }
+                                : { o: 10, h: 10.2, l: 9.8, c: 10 }));
+    assert.equal(filterDetail(b, 71).up2, false, '前一天是跌的');
   }
-  // ③ 离高点太近（10.2→10.3→10.4，几乎在高点）→ 不通过
+  // ③ 实体高于前 2 日最高价
   {
-    const b = mk([[69, 10.2], [70, 10.3], [71, 10.4]]);
-    const d = switchFilterDetail(b, 71);
-    assert.equal(d.inRange, false, `回落 ${(d.dd * 100).toFixed(1)}% 不足 3%`);
-    assert.equal(switchFilterOk(b, 71), false);
+    const low = mk(i => ({ o: 10, h: 10.2, l: 9.9, c: 10.1 }));
+    // 前两天最高 10.2，当日实体 10.3~10.5（高开），最高价 11 → 成立
+    low.open[125] = 10.3; low.close[125] = 10.5; low.high[125] = 11; low.low[125] = 10.2;
+    assert.equal(filterDetail(low, 125).gapBody, true, '实体 10.3 高于前两日最高 10.2');
+    low.open[125] = 10.0; low.close[125] = 10.1;
+    assert.equal(filterDetail(low, 125).gapBody, false, '实体 10.0 低于前两日最高 10.2');
   }
-  // ④ 回落超过 15%（8.0→8.2→8.4，高点 10）→ 不通过
+  // ④ 实体高于最近一个前期高点
   {
-    const b = mk([[69, 8.0], [70, 8.2], [71, 8.4]]);
-    const d = switchFilterDetail(b, 71);
-    assert.ok(d.dd < -0.15, `回落 ${(d.dd * 100).toFixed(1)}% 应小于 -15%`);
-    assert.equal(switchFilterOk(b, 71), false);
+    // 背景用单调下滑的序列（否则全是并列高点，分形法会把每根都算成高点）
+    const b = mk(i => ({ o: 10, h: 10.1 - i * 0.001, l: 9.9, c: 10 }));
+    b.high[100] = 12;                        // 唯一的前期高点
+    b.open[125] = 12.2; b.close[125] = 12.4; b.high[125] = 12.5; b.low[125] = 12.1;
+    const d = filterDetail(b, 125);
+    assert.equal(d.swingIdx, 100, '最近一个前期高点应在 100');
+    assert.equal(d.aboveSwing, true, '实体 12.2 > 前高 12');
+    b.open[125] = 11.6; b.close[125] = 11.8;
+    assert.equal(filterDetail(b, 125).aboveSwing, false, '实体 11.6 < 前高 12');
   }
-  // ⑤ 只看近 60 日：100 天前的 30 元不算高点
+  // ⑤ MACD 金叉：先跌后涨必然出现金叉
   {
-    const b = mk([[100, 30], [158, 10], [159, 9.0], [160, 9.2], [161, 9.4]]);
-    const d = switchFilterDetail(b, 161);
-    assert.ok(Math.abs(d.dd - (-0.06)) < 1e-9, `应只用近 60 日最高收盘 10，实际回落 ${(d.dd * 100).toFixed(1)}%`);
-    assert.equal(switchFilterOk(b, 161), true);
+    const c = new Float64Array(n);
+    for (let i = 0; i < 90; i++) c[i] = 20 - i * 0.1;
+    for (let i = 90; i < n; i++) c[i] = 11 + (i - 90) * 0.2;
+    const b = mk(i => ({ o: c[i], h: c[i] * 1.002, l: c[i] * 0.998, c: c[i] }));
+    const m = macd(c);
+    const cross = [];
+    for (let i = 2; i < n; i++) if (m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1]) cross.push(i);
+    assert.ok(cross.length > 0, '先跌后涨应出现 MACD 金叉');
+    for (const i of cross) assert.equal(filterDetail(b, i, m).macdCross, true);
+    const notCross = [...Array(n).keys()].find(i => i > 65 && !cross.includes(i) && m.dif[i] < m.dea[i]);
+    assert.equal(filterDetail(b, notCross, m).macdCross, false);
   }
-  // ⑥ K 线不足 60 根 → 无法判定，不通过
-  {
-    const b = mk([]);
-    assert.equal(switchFilterDetail(b, 10).ready, false);
-    assert.equal(switchFilterOk(b, 10), false);
-  }
-  assert.equal(SWITCH_FILTER.pullbackMin, -0.15);
-  assert.equal(SWITCH_FILTER.pullbackMax, -0.03);
-  assert.equal(SWITCH_FILTER.upDays, 2);
+  // K 线不足 65 根 → 无法判定
+  assert.equal(filterDetail(mk(i => ({ o: 10, h: 10, l: 10, c: 10 })), 10).ready, false);
+});
+
+test('filterHit：掩码必须覆盖全部勾选项', () => {
+  assert.equal(filterHit(0b00000, 0), true, '一条不勾 = 全部通过');
+  assert.equal(filterHit(0b00011, 0b00011), true);
+  assert.equal(filterHit(0b00011, 0b00111), false);
+  assert.equal(filterHit(0b11111, 0b00100), true);
+  assert.equal(FILTER_ALL, 31);
+  assert.equal(FILTER_DEFS.length, 5);
+  assert.deepEqual(FILTER_DEFS.map(d => d.bit), [1, 2, 4, 8, 16]);
 });
 
 test('费用会真实侵蚀收益', () => {

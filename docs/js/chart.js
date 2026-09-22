@@ -3,6 +3,7 @@
  * 不依赖任何第三方库；A 股配色（红涨绿跌）。
  */
 import { fmtDate, fmtVol, fmtAmount } from './decode.js';
+import { macd } from './sim.js';
 
 const UP = '#ef4444';
 const DOWN = '#22c55e';
@@ -40,6 +41,8 @@ export class KChart {
     this.drag = null;
     this.maPeriods = [5, 10, 20, 60];
     this.showMA = true;
+    this.showMACD = true;   // MACD 副图
+    this.macdRes = null;
     this.lines = [];        // 手动画线，锚在「数据坐标」(bar 下标, 价格)，缩放平移后不会漂
     this.drawMode = false;
     this.draft = null;
@@ -58,6 +61,7 @@ export class KChart {
     this.draft = null;
     if (bars) {
       this.ma = this.maPeriods.map(p => movingAverage(bars.close, p));
+      this.macdRes = macd(bars.close);
       const end = limit;
       const from = Math.max(0, end - Math.min(120, end + 1) + 1);
       this.setView(from, end);
@@ -91,6 +95,7 @@ export class KChart {
   undoLine() { const n = this.lines.pop(); this.draft = null; this.render(); return !!n; }
   setCost(price) { this.cost = price; this.render(); }
   setShowMA(on) { this.showMA = !!on; this.render(); }
+  setShowMACD(on) { this.showMACD = !!on; this.render(); }
 
   setView(from, to) {
     if (!this.bars) return;
@@ -133,13 +138,25 @@ export class KChart {
     const { l, r, t, b } = this.pad;
     const plotW = Math.max(10, this.W - l - r);
     const plotH = Math.max(10, this.H - t - b);
-    const volH = Math.max(30, Math.round(plotH * 0.22));
     const gap = 10;
+    if (this.showMACD && this.macdRes) {
+      const volH = Math.max(26, Math.round(plotH * 0.15));
+      const macdH = Math.max(40, Math.round(plotH * 0.24));
+      const priceH = plotH - volH - macdH - gap * 2;
+      return {
+        x: l, plotW,
+        price: { x: l, y: t, w: plotW, h: priceH },
+        vol: { x: l, y: t + priceH + gap, w: plotW, h: volH },
+        macd: { x: l, y: t + priceH + gap + volH + gap, w: plotW, h: macdH },
+      };
+    }
+    const volH = Math.max(30, Math.round(plotH * 0.22));
     const priceH = plotH - volH - gap;
     return {
       x: l, plotW,
       price: { x: l, y: t, w: plotW, h: priceH },
       vol: { x: l, y: t + priceH + gap, w: plotW, h: volH },
+      macd: null,
     };
   }
 
@@ -215,7 +232,8 @@ export class KChart {
     for (let i = vt; i >= vf; i -= stepX) {
       const x = this._x(i, g);
       ctx.strokeStyle = GRID; ctx.beginPath();
-      ctx.moveTo(Math.round(x) + 0.5, g.price.y); ctx.lineTo(Math.round(x) + 0.5, g.vol.y + g.vol.h); ctx.stroke();
+      const bot = g.macd ? g.macd.y + g.macd.h : g.vol.y + g.vol.h;
+      ctx.moveTo(Math.round(x) + 0.5, g.price.y); ctx.lineTo(Math.round(x) + 0.5, bot); ctx.stroke();
       ctx.fillStyle = MUTED;
       ctx.fillText(fmtDate(bars.dates[i]).slice(5), x, this.H - 10);
     }
@@ -308,6 +326,54 @@ export class KChart {
       ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     }
 
+    // --- MACD 副图
+    if (g.macd && this.macdRes) {
+      const { dif, dea, hist } = this.macdRes;
+      const m = g.macd;
+      let mmin = 0, mmax = 0;
+      for (let i = vf; i <= vt; i++) {
+        mmin = Math.min(mmin, dif[i], dea[i], hist[i]);
+        mmax = Math.max(mmax, dif[i], dea[i], hist[i]);
+      }
+      const pad = (mmax - mmin) * 0.08 || Math.abs(mmax) * 0.1 || 1;
+      mmin -= pad; mmax += pad;
+      const yM = v => m.y + (mmax - v) / (mmax - mmin) * m.h;
+      // 0 轴
+      const y0 = Math.round(yM(0)) + 0.5;
+      ctx.strokeStyle = GRID; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(m.x, y0); ctx.lineTo(m.x + m.w, y0); ctx.stroke();
+      // 柱
+      for (let i = vf; i <= vt; i++) {
+        const x = this._x(i, g);
+        const v = hist[i];
+        ctx.fillStyle = v >= 0 ? 'rgba(239,68,68,.6)' : 'rgba(34,197,94,.6)';
+        const y = yM(v);
+        ctx.fillRect(x - bodyW / 2, Math.min(y, y0), bodyW, Math.max(1, Math.abs(y - y0)));
+      }
+      // DIF / DEA
+      const line = (arr, col) => {
+        ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.beginPath();
+        let started = false;
+        for (let i = vf; i <= vt; i++) {
+          const x = this._x(i, g), y = yM(arr[i]);
+          if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      };
+      line(dif, '#f8fafc');
+      line(dea, '#fbbf24');
+      ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = MUTED;
+      ctx.fillText('MACD(12,26,9)', m.x + 4, m.y + 8);
+      ctx.fillStyle = '#f8fafc'; ctx.fillText('DIF', m.x + 78, m.y + 8);
+      ctx.fillStyle = '#fbbf24'; ctx.fillText('DEA', m.x + 104, m.y + 8);
+      ctx.fillStyle = MUTED;
+      ctx.textAlign = 'left';
+      ctx.fillText(mmax.toFixed(2), m.x + m.w + 6, m.y + 6);
+      ctx.fillText(mmin.toFixed(2), m.x + m.w + 6, m.y + m.h - 6);
+    }
+
     // --- 手动画线（剪裁在价格区内）
     if (this.lines.length || this.draft) {
       ctx.save();
@@ -356,7 +422,8 @@ export class KChart {
       const x = Math.round(this._x(i, g)) + 0.5;
       ctx.save();
       ctx.setLineDash([4, 4]); ctx.strokeStyle = CROSS; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(x, g.price.y); ctx.lineTo(x, g.vol.y + g.vol.h); ctx.stroke();
+      const bottom = g.macd ? g.macd.y + g.macd.h : g.vol.y + g.vol.h;
+      ctx.beginPath(); ctx.moveTo(x, g.price.y); ctx.lineTo(x, bottom); ctx.stroke();
       if (this.hoverY != null && this.hoverY > g.price.y && this.hoverY < g.price.y + g.price.h) {
         const y = Math.round(this.hoverY) + 0.5;
         ctx.beginPath(); ctx.moveTo(g.x, y); ctx.lineTo(g.x + g.plotW, y); ctx.stroke();
@@ -390,6 +457,12 @@ export class KChart {
       // 与真实成交额的中位偏差 0.2%、99 分位 1.7%（见 tools/verify_data.py）
       ['成交额≈', fmtAmount((b.high[i] + b.low[i] + b.close[i]) / 3 * b.vol[i]) + '元'],
     ];
+    if (this.showMACD && this.macdRes) {
+      const { dif, dea, hist } = this.macdRes;
+      lines.push(['MACD', hist[i].toFixed(3), MUTED]);
+      lines.push(['DIF', dif[i].toFixed(3), '#f8fafc']);
+      lines.push(['DEA', dea[i].toFixed(3), '#fbbf24']);
+    }
     if (this.showMA) {                       // 均线的值也列出来，方便直接读乖离
       this.maPeriods.forEach((p, k) => {
         const v = this.ma[k] ? this.ma[k][i] : NaN;

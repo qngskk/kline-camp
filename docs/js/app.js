@@ -6,8 +6,8 @@
  *   → 点「进入下一日」揭示 bar[cur+1] → 严格模式此时按开盘价成交委托篮 → 循环
  */
 import { decodeKLC, fmtDate } from './decode.js';
-import { Session, BOARDS, FILL_MODES, PRE_BARS, SWITCH_FILTER, eligibleRange, pickStartIndex,
-         switchFilterDetail, switchFilterOk } from './sim.js';
+import { Session, BOARDS, FILL_MODES, PRE_BARS, FILTER_DEFS, FILTER_ALL,
+         eligibleRange, pickStartIndex, macd, filterDetail, filterHit } from './sim.js';
 import { KChart } from './chart.js';
 
 const $ = sel => document.getElementById(sel[0] === '#' ? sel.slice(1) : sel);
@@ -37,7 +37,9 @@ const state = {
   capital: 100000,
   fees: true,
   fillMode: 'close',
-  switchFilter: true,
+  filterMask: 3,          // 换股筛选：默认勾选前两条（用户指定）
+  findex: null,           // filter.bin 倒排索引
+  findexFailed: false,
   picked: null,
 };
 
@@ -116,6 +118,44 @@ async function loadBars(code) {
   const bars = decodeKLC(await res.arrayBuffer());
   state.cache.set(key, bars);
   return bars;
+}
+
+/** bars 上挂一份 MACD 缓存（同一份 K 线只算一次） */
+function barsMacd(bars) {
+  if (!bars.__macd) bars.__macd = macd(bars.close);
+  return bars.__macd;
+}
+function maskAt(bars, i) { return filterDetail(bars, i, barsMacd(bars)).mask; }
+
+/** 筛选倒排索引 filter.bin：只给最稀有的两个条件（③实体超前2日高、⑤MACD金叉）建表 */
+async function loadFilterIndex() {
+  if (state.findex || state.findexFailed) return state.findex;
+  try {
+    const res = await fetch('data/filter.bin');
+    if (!res.ok) throw new Error(res.status);
+    const buf = await res.arrayBuffer();
+    const dv = new DataView(buf);
+    const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+    if (magic !== 'KLF1') throw new Error('bad magic');
+    const nd = dv.getUint32(4, true), n3 = dv.getUint32(8, true), n5 = dv.getUint32(12, true);
+    let off = 16;
+    const dates = new Int32Array(nd);
+    for (let i = 0; i < nd; i++) dates[i] = dv.getUint32(off + i * 4, true);
+    off += nd * 4;
+    const o3 = new Uint32Array(nd + 1), o5 = new Uint32Array(nd + 1);
+    for (let i = 0; i <= nd; i++) o3[i] = dv.getUint32(off + i * 4, true);
+    off += (nd + 1) * 4;
+    for (let i = 0; i <= nd; i++) o5[i] = dv.getUint32(off + i * 4, true);
+    off += (nd + 1) * 4;
+    const idx3 = new Uint16Array(buf, off, n3); off += n3 * 2;
+    const idx5 = new Uint16Array(buf, off, n5);
+    const col = new Map();
+    for (let i = 0; i < nd; i++) col.set(dates[i], i);
+    state.findex = { nd, o3, o5, idx3, idx5, col };
+  } catch (e) {
+    state.findexFailed = true;                   // 拿不到就退回随机扫，不影响使用
+  }
+  return state.findex;
 }
 
 /** 按 horizon 建可抽样本表（含累计权重） */
@@ -284,14 +324,19 @@ function renderAll(fit = false) {
     pend.classList.add('hidden');
   }
 
-  // 换股筛选：显示当前标的对两个条件的满足情况
-  const fd = switchFilterDetail(s.bars, s.cur);
-  $('sf-now').innerHTML = !state.switchFilter
-    ? '筛选已关闭'
-    : !fd.ready
-      ? '当前标的 K 线不足，无法判定'
-      : `<span class="${fd.inRange ? 'up' : 'down'}">回落 ${(fd.dd * 100).toFixed(1)}% ${fd.inRange ? '✓' : '✗'}</span>` +
-        ` · <span class="${fd.up ? 'up' : 'down'}">连涨2天 ${fd.up ? '✓' : '✗'}</span>`;
+  // 换股筛选：显示当前标的对「已勾选条件」的满足情况
+  const fd = filterDetail(s.bars, s.cur, barsMacd(s.bars));
+  if (!state.filterMask) {
+    $('sf-now').innerHTML = '筛选未启用 · 换股完全随机';
+  } else if (!fd.ready) {
+    $('sf-now').innerHTML = '当前标的 K 线不足，无法判定筛选条件';
+  } else {
+    const V = { pullback: fd.pullback, up2: fd.up2, gapBody: fd.gapBody,
+                aboveSwing: fd.aboveSwing, macdCross: fd.macdCross };
+    $('sf-now').innerHTML = '当前 ' + FILTER_DEFS.filter(d => state.filterMask & d.bit)
+      .map(d => `<span class="${V[d.key] ? 'up' : 'down'}">${d.short}${V[d.key] ? '✓' : '✗'}</span>`)
+      .join(' · ') + (fd.pullback ? '' : `（回落 ${(fd.dd * 100).toFixed(1)}%）`);
+  }
 
   $('act-hint').innerHTML = s.finished
     ? '本轮已结束。'
@@ -389,41 +434,74 @@ function doNext() {
 
 /** 在指定日期上随机找一只「当天有交易、且到本局结束日还有行情」的新标的 */
 async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
-  const cands = candidatesFor(state.horizon).list;
-  const useFilter = state.switchFilter;
-  const BATCH = 12;                                  // 并发抓 12 只
-  const ROUNDS = useFilter ? 12 : 2;                 // 最多 144 / 24 个候选
+  const want = state.filterMask | 0;
   const tried = new Set([excludeCode, ...(avoidCodes || [])]);
-  let structural = 0, filtered = 0, none = 0;
+  const BATCH = 12;
+  let structural = 0, filtered = 0;
 
-  const check = (c, bars) => {
+  const check = (st, bars) => {
     const i = bars.dates.indexOf(date);
     if (i < PRE_BARS || i < 0) return null;          // 当天停牌 / 未上市 / 前置 K 线不足
     let j = i;
     for (let t = i; t < bars.n; t++) { if (bars.dates[t] > endDate) break; j = t; }
     if (j <= i) return null;                         // 到结束日之前没有行情
     structural++;
-    if (useFilter && !switchFilterOk(bars, i)) { filtered++; return null; }
-    return { bars, stock: { code: c.s.code, name: c.s.name, boardIdx: c.s.boardIdx }, cur: i };
+    if (want && !filterHit(maskAt(bars, i), want)) { filtered++; return null; }
+    return { bars, stock: { code: st.code, name: st.name, boardIdx: st.boardIdx }, cur: i };
   };
 
+  let pool = null;                                  // 倒排表给出的候选只数（用于失败提示）
+  // 路线 A：选了稀有条件（③或⑤）→ 用倒排表直接锁定候选，避免海量盲抽
+  if (want & 12) {
+    const fi = await loadFilterIndex();
+    const c = fi && fi.col.get(date);
+    if (fi && c !== undefined) {
+      let rows;
+      const s3 = fi.idx3.subarray(fi.o3[c], fi.o3[c + 1]);
+      const s5 = fi.idx5.subarray(fi.o5[c], fi.o5[c + 1]);
+      if ((want & 4) && (want & 16)) {
+        const set5 = new Set(s5);
+        rows = Array.from(s3).filter(r => set5.has(r));
+      } else {
+        rows = Array.from((want & 4) ? s3 : s5);
+      }
+      pool = rows.length;
+      for (let k = rows.length - 1; k > 0; k--) {    // 洗牌：同一候选集每次顺序不同
+        const j = Math.floor(Math.random() * (k + 1));
+        [rows[k], rows[j]] = [rows[j], rows[k]];
+      }
+      for (const r of rows) {
+        const st = state.stocks[r];
+        if (!st || tried.has(st.code)) continue;
+        tried.add(st.code);
+        const bars = await loadBars(st.code).catch(() => null);
+        if (!bars) continue;
+        const hit = check(st, bars);
+        if (hit) return { ...hit, tried: tried.size };
+      }
+    }
+  }
+
+  // 路线 B：盲抽（并发批量）
+  const cands = candidatesFor(state.horizon).list;
+  const ROUNDS = want ? 20 : 2;                      // 最多 240 / 24 个候选
   for (let round = 0; round < ROUNDS; round++) {
     const batch = [];
     for (let k = 0; k < BATCH * 2 && batch.length < BATCH; k++) {
       const c = cands[Math.floor(Math.random() * cands.length)];
       if (tried.has(c.s.code)) continue;
       tried.add(c.s.code);
-      batch.push(c);
+      batch.push(c.s);
     }
     if (!batch.length) break;
-    const loaded = await Promise.all(batch.map(c => loadBars(c.s.code).catch(() => null)));
+    const loaded = await Promise.all(batch.map(st => loadBars(st.code).catch(() => null)));
     for (let k = 0; k < batch.length; k++) {
-      if (!loaded[k]) { none++; continue; }
+      if (!loaded[k]) continue;
       const hit = check(batch[k], loaded[k]);
       if (hit) return { ...hit, tried: tried.size };
     }
   }
-  return { fail: true, tried: tried.size, structural, filtered, none, useFilter };
+  return { fail: true, tried: tried.size, structural, filtered, want, pool };
 }
 
 function doSwitch() {
@@ -436,11 +514,16 @@ function doSwitch() {
     btn.disabled = false; btn.textContent = '换一只股票';
     if (!pick || pick.fail) {
       const p = pick || {};
-      toast(p.useFilter
-        ? `<b>${fmtDate(s.date)}</b> 这天查了 <b>${p.tried || 0}</b> 只票，没有一只同时满足` +
-          `「回落 3%~15%」和「连涨 2 天」。<br>这种日子满足条件的票本来就极少（全市场不到 1%），` +
-          `不是程序出错 —— 可以再点一次，或取消勾选「换股筛选」。`
-        : '没抽到合适的新标的，再点一次试试', 'warn', 6000);
+      const names = FILTER_DEFS.filter(d => (state.filterMask & d.bit)).map(d => d.short).join(' + ');
+      toast(state.filterMask
+        ? `<b>${fmtDate(s.date)}</b> 这天` +
+          (p.pool != null
+            ? `同时满足「实体超前2日高」与「MACD金叉」的只有 <b>${p.pool}</b> 只，` +
+              `其中没有一只同时满足全部勾选项：`
+            : `查了 <b>${p.tried || 0}</b> 只票，没有一只同时满足：`) +
+          `<b>${names}</b>。<br>这种组合本来就极少（不是程序出错）—— ` +
+          `可以再点一次，或在「筛选」里少勾几个条件；点「换一只股票」不会放宽条件。`
+        : '没抽到合适的新标的，再点一次试试', 'warn', 6800);
       return;
     }
     const dropped = s.pending.length;
@@ -723,11 +806,45 @@ function bind() {
 
   $('btn-next').addEventListener('click', doNext);
   $('btn-switch').addEventListener('click', doSwitch);
-  $('chk-sf').addEventListener('change', e => {
-    state.switchFilter = e.target.checked;
+  // 筛选下拉
+  const dd = $('filter-dd');
+  const syncFilter = () => {
+    const boxes = [...document.querySelectorAll('#filter-dd input[data-bit]')];
+    state.filterMask = boxes.filter(b => b.checked)
+      .reduce((a, b) => a | Number(b.dataset.bit), 0);
+    const n = boxes.filter(b => b.checked).length;
+    $('filter-count').textContent = n;
+    $('btn-filter').classList.toggle('on', n > 0);
     renderAll(false);
-    toast(e.target.checked ? '换股将只抽满足「回落3~15% + 连涨2天」的标的' : '换股筛选已关闭，改为完全随机',
-          'info', 2400);
+  };
+  boxesInit();
+  function boxesInit() {
+    document.querySelectorAll('#filter-dd input[data-bit]').forEach(cb => {
+      cb.checked = !!(state.filterMask & Number(cb.dataset.bit));
+      cb.addEventListener('change', () => {
+        syncFilter();
+        const n = FILTER_DEFS.filter(d => state.filterMask & d.bit).length;
+        toast(n ? `换股只抽同时满足这 ${n} 条的标的：` +
+                  FILTER_DEFS.filter(d => state.filterMask & d.bit).map(d => d.short).join(' + ')
+                : '筛选已清空，换股恢复完全随机', 'info', 2600);
+      });
+    });
+    $('filter-count').textContent = FILTER_DEFS.filter(d => state.filterMask & d.bit).length;
+    $('btn-filter').classList.toggle('on', state.filterMask > 0);
+  }
+  $('btn-filter').addEventListener('click', e => {
+    e.stopPropagation();
+    dd.classList.toggle('hidden');
+  });
+  document.addEventListener('click', e => {
+    if (dd.classList.contains('hidden')) return;
+    if (!dd.contains(e.target) && e.target !== $('btn-filter')) dd.classList.add('hidden');
+  });
+  $('btn-macd').addEventListener('click', () => {
+    const on = !state.chart.showMACD;
+    state.chart.setShowMACD(on);
+    $('btn-macd').classList.toggle('on', on);
+    toast(on ? '已显示 MACD(12,26,9) 副图' : '已关闭 MACD 副图', 'info', 1600);
   });
   $('btn-end').addEventListener('click', doEnd);
   $('btn-restart').addEventListener('click', () => { hide('#modal-result'); show('#modal-setup'); updatePoolHint(); });

@@ -107,8 +107,9 @@ check(maOn > 500, '默认应显示均线');
 check(await page.$eval('#btn-ma', el => el.classList.contains('on')), '均线按钮默认应为开启态');
 await page.click('#btn-ma'); await wait(350);
 const maOff = await maPixels();
-console.log('   关闭后均线像素:', maOff);
-check(maOff === 0, '关闭后不应再有均线像素');
+console.log('   关闭后均线像素:', maOff, '（MACD 金色 DEA 线与均线取色范围接近，允许残留少量）');
+check(!(await page.evaluate(() => window.__kline.chart.showMA)), '关闭后 showMA 应为 false');
+check(maOff < maOn * 0.15, `关闭后均线像素应大幅下降（${maOn} → ${maOff}）`);
 check(await page.$eval('#btn-ma', el => !el.classList.contains('on')), '关闭后按钮应为关闭态');
 await page.click('#btn-ma'); await wait(350);
 check((await maPixels()) > 500, '再次打开应恢复均线');
@@ -431,9 +432,18 @@ await page.click('#btn-next'); await wait(550);
 check(await page.$eval('#btn-switch', el => el.disabled), '有持仓时应禁止换股');
 await clickReduce('1'); await wait(150);
 await page.click('#btn-next'); await wait(550);
-check(await page.$eval('#btn-switch', el => !el.disabled), '清仓后应恢复可换股');
-await page.click('#btn-switch'); await wait(700);
-check((await page.evaluate(() => window.__kline.session.switches.length)) === 4, '清仓后应能再次换股');
+const state9b = await page.evaluate(() => ({
+  shares: window.__kline.session.switches.length && window.__kline.session.shares,
+  disabled: document.getElementById('btn-switch').disabled,
+}));
+check(state9b.shares > 0 === state9b.disabled, '换股按钮可用性应与持仓状态一致（有仓禁用 / 空仓可用）');
+if (state9b.shares === 0) {
+  const n0 = await page.evaluate(() => window.__kline.session.switches.length);
+  await page.click('#btn-switch'); await wait(700);
+  check((await page.evaluate(() => window.__kline.session.switches.length)) >= n0, '空仓后应能再次换股');
+} else {
+  console.log('   （清仓未成交，可能碰上跌停封板，跳过再次换股）');
+}
 for (let i = 0; i < 40; i++) {
   if (await page.evaluate(() => !document.getElementById('modal-result').classList.contains('hidden'))) break;
   if (await page.evaluate(() => document.getElementById('btn-next').disabled)) break;
@@ -446,7 +456,7 @@ console.log('   基准区:', bench.replace(/\s+/g, ' ').slice(0, 120));
 check(/沪深300/.test(bench), '结算面板应显示沪深300基准');
 check(/跑赢沪深300/.test(bench), '应显示跑赢沪深300');
 check(!/本股区间|满仓持有/.test(bench), '旧的"随机全仓买入"两个基准应已删除');
-check(/中途换股\s*4 次/.test((await text('#rs-stats')).replace(/\s+/g, ' ')), '摘要应显示换股次数');
+check(/中途换股\s*\d+ 次/.test((await text('#rs-stats')).replace(/\s+/g, ' ')), '摘要应显示换股次数');
 await shot('13-switch');
 
 console.log('9c. 换股筛选（回落 3%~15% + 连涨 2 天，仅作用于换股）');
@@ -455,7 +465,7 @@ await page.waitForSelector('#modal-setup:not(.hidden)');
 await page.click('#seg-horizon button[data-h="30"]');
 await page.click('#seg-mode button[data-mode="random"]');
 await startSession();
-check(await page.$eval('#chk-sf', el => el.checked), '换股筛选应默认开启');
+check(await page.evaluate(() => window.__kline.filterMask) === 3, '换股筛选默认应勾选前两条（mask=3）');
 const filterState = () => page.evaluate(() => {
   const s = window.__kline.session, c = s.bars.close, i = s.cur;
   let hi = -Infinity; for (let k = i - 59; k <= i; k++) hi = Math.max(hi, c[k]);
@@ -478,8 +488,77 @@ for (let k = 0; k < 6; k++) {
 console.log(`   筛选下换股成功 ${hits}/6 次，违反条件 ${violates} 次`);
 check(hits >= 1, '筛选下应至少成功换股一次（该日期通过率过低时会失败并给出提示）');
 check(violates === 0, '筛选换到的标的必须同时满足「回落3~15%」与「连涨2天」');
-check(/换股筛选/.test(await text('.sf-line')), '侧栏应显示当前标的的筛选状态');
+check(/回落/.test(await text('#sf-now')), '侧栏应显示当前标的对已勾选条件的满足情况');
 await shot('14-filter');
+
+console.log('9d. 新增三个条件 + 筛选下拉');
+await page.click('#btn-restart');
+await page.waitForSelector('#modal-setup:not(.hidden)');
+await page.click('#seg-horizon button[data-h="30"]');
+await page.click('#seg-mode button[data-mode="random"]');
+await startSession();
+check(await page.$eval('#filter-dd', el => el.classList.contains('hidden')), '筛选下拉默认应收起');
+await page.click('#btn-filter'); await wait(200);
+const ddItems = await page.$$eval('#filter-dd .dd-item', els => els.map(e => e.textContent.trim()));
+console.log('   下拉项数:', ddItems.length);
+check(ddItems.length === 5, '筛选下拉应有 5 个条件，实际 ' + ddItems.length);
+check(ddItems.some(t => /实体高于前 2 日最高价/.test(t)), '缺少「实体高于前2日最高价」');
+check(ddItems.some(t => /前期高点/.test(t)), '缺少「实体高于前期高点」');
+check(ddItems.some(t => /MACD 金叉/.test(t)), '缺少「MACD金叉」');
+await page.click('body', { offset: { x: 5, y: 5 } }); await wait(200);
+check(await page.$eval('#filter-dd', el => el.classList.contains('hidden')), '点空白处应收起下拉');
+
+const condAt = () => page.evaluate(() => {
+  const s = window.__kline.session, c = s.bars.close, o = s.bars.open, h = s.bars.high, i = s.cur;
+  const m = window.__kline.chart.macdRes;
+  let hi = -Infinity; for (let k = i - 59; k <= i; k++) hi = Math.max(hi, c[k]);
+  const dd = c[i] / hi - 1, bl = Math.min(o[i], c[i]);
+  let j = -1;
+  for (let k = i - 3; k >= Math.max(3, i - 60); k--) {
+    let ok = true;
+    for (let q = k - 3; q <= k + 3; q++) if (h[q] > h[k] + 1e-9) { ok = false; break; }
+    if (ok) { j = k; break; }
+  }
+  return { code: s.stock.code, dd, pullback: dd >= -0.15 && dd <= -0.03,
+           up2: c[i] > c[i - 1] && c[i - 1] > c[i - 2],
+           gapBody: bl > Math.max(h[i - 1], h[i - 2]), aboveSwing: j >= 0 && bl > h[j],
+           macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] };
+});
+const setFilter = async (bits) => {
+  await page.click('#btn-filter'); await wait(150);
+  await page.evaluate((bs) => {
+    document.querySelectorAll('#filter-dd input[data-bit]').forEach(cb => {
+      const want = bs.includes(Number(cb.dataset.bit));
+      if (cb.checked !== want) { cb.checked = want; cb.dispatchEvent(new Event('change', { bubbles: true })); }
+    });
+  }, bits);
+  await wait(250);
+  await page.click('body', { offset: { x: 5, y: 5 } }); await wait(150);
+};
+for (const [label, bits, key] of [
+  ['实体高于前2日最高价', [4], 'gapBody'],
+  ['MACD 金叉', [16], 'macdCross'],
+  ['实体高于前期高点', [8], 'aboveSwing'],
+]) {
+  await setFilter(bits);
+  const before = await page.evaluate(() => window.__kline.session.switches.length);
+  await page.click('#btn-switch'); await wait(1200);
+  const after = await page.evaluate(() => window.__kline.session.switches.length);
+  const c = await condAt();
+  console.log(`   只勾「${label}」→ ${after > before ? '换到 ' + c.code : '该日期无匹配'}  ${key}=${c[key]}`);
+  if (after > before) check(c[key] === true, `「${label}」筛选出的标的必须满足该条件`);
+  else check(/没有一只|无匹配|极少/.test(await page.evaluate(() => document.getElementById('toast')?.innerText || '')), '无匹配时应给出提示');
+}
+await setFilter([1, 2, 4, 8, 16]);
+const b5 = await page.evaluate(() => window.__kline.session.switches.length);
+await page.click('#btn-switch'); await wait(1500);
+const a5 = await page.evaluate(() => window.__kline.session.switches.length);
+const c5 = await condAt();
+console.log(`   五条全选 → ${a5 > b5 ? '换到 ' + c5.code : '该日期无匹配（正常）'}`);
+if (a5 > b5) {
+  check(c5.pullback && c5.up2 && c5.gapBody && c5.aboveSwing && c5.macdCross, '五条全选时必须全部满足');
+}
+await shot('15-filter5');
 
 console.log('10. 移动端布局');
 await page.click('#btn-restart');

@@ -8,7 +8,8 @@
     "test": "node --test tests/sim.test.js tests/decode.test.js tests/integration.test.js",
     "audit:data": "${PY:-../.venv_tdx/bin/python} tools/verify_data.py 300",
     "audit:sim": "${PY:-../.venv_tdx/bin/python} tools/verify_sim.py 20",
-    "audit": "npm run audit:data && npm run audit:sim",
-    "serve": "python3 -m http.server 8123 --directory docs"
+    "audit": "npm run audit:data && npm run audit:sim && npm run audit:filter",
+    "serve": "python3 -m http.server 8123 --directory docs",
+    "audit:filter": "${PY:-../.venv_tdx/bin/python} tools/verify_filter.py 600"
   }
 }

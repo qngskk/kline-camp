@@ -517,36 +517,85 @@ export class Session {
 }
 
 /**
- * 「换股筛选」条件 —— 由用户 2026-09-22 指定，不在此之外自加任何条件：
- *   ① 从近 LOOKBACK 日**最高收盘**回落 3%~15%（仍在回调中）
- *   ② 最近连续 UP_DAYS 天上涨（收盘逐日抬高）
- * 只用于「换一只股票」，不影响开局随机抽样。
+ * 指数均线（EMA）—— MACD 用
  */
-export const SWITCH_FILTER = {
-  lookback: 60,        // 看多少天的最高收盘
-  pullbackMin: -0.15,  // 回落下限（跌幅不超过 15%）
-  pullbackMax: -0.03,  // 回落上限（至少回落 3%）
-  upDays: 2,           // 连续上涨天数
-};
+export function ema(arr, n) {
+  const k = 2 / (n + 1);
+  const out = new Float64Array(arr.length);
+  let prev = arr.length ? arr[0] : 0;
+  for (let i = 0; i < arr.length; i++) {
+    prev = i === 0 ? arr[0] : arr[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
 
-/** 计算筛选明细，供界面显示 */
-export function switchFilterDetail(bars, i, f = SWITCH_FILTER) {
-  const need = Math.max(f.lookback - 1, f.upDays);
-  if (!bars || i < need || i >= bars.n) return { ok: false, ready: false, dd: null, up: false };
-  const c = bars.close;
+/** MACD(12,26,9)：DIF / DEA / 柱（柱 = (DIF−DEA)×2，国内习惯） */
+export function macd(closes, fast = 12, slow = 26, signal = 9) {
+  const f = ema(closes, fast), sl = ema(closes, slow);
+  const dif = new Float64Array(closes.length);
+  for (let i = 0; i < closes.length; i++) dif[i] = f[i] - sl[i];
+  const dea = ema(dif, signal);
+  const hist = new Float64Array(closes.length);
+  for (let i = 0; i < closes.length; i++) hist[i] = (dif[i] - dea[i]) * 2;
+  return { dif, dea, hist };
+}
+
+/**
+ * 换股筛选条件 —— 全部由用户 2026-09-22 指定，代码里不加任何额外条件。
+ * 条件之间是「且」的关系；一条都不勾选 = 完全随机。
+ *   ① 从近 60 日**最高收盘**回落 3%~15%
+ *   ② 最近连续 2 天收盘上涨
+ *   ③ 当前 K 线**实体**（开收之间的部分）高于**前 2 日的最高价**
+ *   ④ 当前 K 线**实体**高于**最近一个前期高点**
+ *   ⑤ MACD 金叉（DIF 上穿 DEA）
+ */
+export const FILTER_DEFS = [
+  { bit: 1, key: 'pullback', short: '回落3~15%', label: '从近 60 日最高收盘回落 3%~15%' },
+  { bit: 2, key: 'up2', short: '连涨2天', label: '最近连续 2 天收盘上涨' },
+  { bit: 4, key: 'gapBody', short: '实体超前2日高', label: 'K 线实体高于前 2 日最高价' },
+  { bit: 8, key: 'aboveSwing', short: '实体破前高', label: 'K 线实体高于最近一个前期高点' },
+  { bit: 16, key: 'macdCross', short: 'MACD金叉', label: 'MACD 金叉（DIF 上穿 DEA）' },
+];
+export const FILTER_ALL = FILTER_DEFS.reduce((a, d) => a | d.bit, 0);
+
+/** 最近一个「已完成」的摆动高点（前后各 k 根里的最高，即分形高点）。找不到返回 -1 */
+export function swingHighIndex(bars, i, k = 3, lookback = 60) {
+  const h = bars.high;
+  const from = Math.max(k, i - lookback);
+  for (let j = i - k; j >= from; j--) {
+    let ok = true;
+    for (let m = j - k; m <= j + k; m++) if (h[m] > h[j] + 1e-9) { ok = false; break; }
+    if (ok) return j;
+  }
+  return -1;
+}
+
+/** 逐条判定，返回明细（供界面显示） */
+export function filterDetail(bars, i, macdRes) {
+  const bad = { ready: false, mask: 0 };
+  if (!bars || i < 65 || i >= bars.n) return bad;
+  const c = bars.close, o = bars.open, h = bars.high;
   let hi = -Infinity;
-  for (let k = i - f.lookback + 1; k <= i; k++) if (c[k] > hi) hi = c[k];
+  for (let k = i - 59; k <= i; k++) if (c[k] > hi) hi = c[k];
   const dd = hi > 0 ? c[i] / hi - 1 : 0;
-  let up = true;
-  for (let k = 0; k < f.upDays; k++) if (!(c[i - k] > c[i - k - 1])) { up = false; break; }
-  const inRange = dd >= f.pullbackMin && dd <= f.pullbackMax;
-  return { ok: inRange && up, ready: true, dd, inRange, up };
+  const pullback = dd >= -0.15 && dd <= -0.03;
+  const up2 = c[i] > c[i - 1] && c[i - 1] > c[i - 2];
+  const bodyLo = Math.min(o[i], c[i]);
+  const gapBody = bodyLo > Math.max(h[i - 1], h[i - 2]);
+  const sh = swingHighIndex(bars, i);
+  const aboveSwing = sh >= 0 && bodyLo > h[sh];
+  let macdCross = null;
+  if (macdRes) {
+    macdCross = macdRes.dif[i] > macdRes.dea[i] && macdRes.dif[i - 1] <= macdRes.dea[i - 1];
+  }
+  const mask = (pullback ? 1 : 0) | (up2 ? 2 : 0) | (gapBody ? 4 : 0) |
+               (aboveSwing ? 8 : 0) | (macdCross ? 16 : 0);
+  return { ready: true, mask, dd, pullback, up2, gapBody, aboveSwing, macdCross, swingIdx: sh };
 }
 
-/** 筛选条件是否满足（换股用） */
-export function switchFilterOk(bars, i, f = SWITCH_FILTER) {
-  return switchFilterDetail(bars, i, f).ok;
-}
+/** mask 是否覆盖选中的全部条件 */
+export function filterHit(mask, want) { return want === 0 || (mask & want) === want; }
 
 /** 0.25 -> '1/4'；0.5 -> '1/2'；0.3333 -> '1/3' */
 export function fracLabel(f) {
