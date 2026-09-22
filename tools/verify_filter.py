@@ -36,7 +36,10 @@ def mask_of(code: str, date: int) -> int:
     dif = _ema(cl, 12) - _ema(cl, 26); dea = _ema(dif, 9)
     ph = float(hi[max(0, i - FILTER_PRIOR_N):i].max())
     v = 0
-    if -0.15 <= cl[i] / ph - 1 <= -0.03:
+    t3 = i - 3
+    if (t3 - 5 >= 0 and cl[t3] > cl[t3 - 5] and hi[t3] > 0
+            and -0.10 <= cl[i] / hi[t3] - 1 <= -0.03
+            and cl[i - 1] < cl[i - 2] and cl[i] < cl[i - 2]):
         v |= 1
     if cl[i] > cl[i - 1] > cl[i - 2]:
         v |= 2

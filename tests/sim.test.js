@@ -644,29 +644,28 @@ test('filterDetail：五个条件逐条判定（用户指定的规则）', () =>
     return { n, dates: new Int32Array(n).map((_, i) => 20240101 + i), open: o, high: h, low: l,
              close: c, vol: new Float64Array(n).fill(1e6) };
   };
-  // ① 相对「前期高点」回落 3%~15%：前 69 根最高 10.2，现价 9.4 → -7.8%；且 9.0→9.2→9.4 连涨 2 天
+  // ① 上涨趋势中回踩 2 天：T-3 高于 5 天前 + 相对 T-3 最高价低 3~10% + T-1、T 都低于 T-2 收盘
   {
-    const b = mk(i => {
-      if (i === 69) return { o: 10, h: 10.2, l: 8.9, c: 9.0 };
-      if (i === 70) return { o: 9.1, h: 9.3, l: 9.0, c: 9.2 };
-      if (i >= 71) return { o: 9.3, h: 9.45, l: 9.15, c: 9.4 };
-      return { o: 10, h: 10.2, l: 9.9, c: 10 };
-    });
-    const d = filterDetail(b, 71);
-    assert.equal(d.priorHigh, 10.2, '前高应取近 20 根最高价');
-    assert.equal(d.pullback, true, `回落 ${(d.dd * 100).toFixed(1)}% 应在 3%~15%`);
-    assert.equal(d.up2, true, '9.0 → 9.2 → 9.4 应按连涨 2 天成立');
-    assert.equal(d.gapBody, false, '开盘 9.3 未超过前 2 日最高 10.2');
-    assert.equal(d.aboveSwing, false);
-  }
-  // ① 离前高太近（<3%）不算回踩；超过 15% 也不算
-  {
-    const near = mk(i => (i >= 71 ? { o: 10.1, h: 10.3, l: 10.0, c: 10.15 }
-                                  : { o: 10, h: 10.2, l: 9.9, c: 10 }));
-    assert.equal(filterDetail(near, 71).pullback, false, '只回落 0.5% 不算回踩');
-    const deep = mk(i => (i >= 71 ? { o: 8.6, h: 8.7, l: 8.5, c: 8.6 }
-                                  : { o: 10, h: 10.2, l: 9.9, c: 10 }));
-    assert.equal(filterDetail(deep, 71).pullback, false, '回落 15.7% 超出范围');
+    const base = (i) => {
+      if (i <= 63) return { o: 9.0, h: 9.2, l: 8.9, c: 9.0 };     // 5 天前还在 9.0
+      if (i <= 68) return { o: 9.5, h: 10.5, l: 9.4, c: 10.0 };   // T-3（i=68）收 10.0，最高 10.5
+      if (i === 69) return { o: 10.0, h: 10.1, l: 9.8, c: 9.9 };  // T-2
+      if (i === 70) return { o: 9.7, h: 9.9, l: 9.5, c: 9.6 };    // T-1
+      return { o: 9.6, h: 9.8, l: 9.5, c: 9.7 };                  // T
+    };
+    const d = filterDetail(mk(base), 71);
+    assert.equal(d.trendUp, true, 'T-3(10.0) 应高于 5 天前(9.0)');
+    assert.equal(d.inRange, true, `相对 T-3 最高价 10.5 回踩 ${(d.dd * 100).toFixed(1)}% 应在 3%~10%`);
+    assert.equal(d.down2, true, 'T-1(9.6)、T(9.7) 都低于 T-2(9.9)');
+    assert.equal(d.pullback, true);
+    // 回踩不足 3%
+    assert.equal(filterDetail(mk(i => (i === 71 ? { o: 10.3, h: 10.4, l: 10.2, c: 10.3 } : base(i))), 71).pullback, false);
+    // 回踩超过 10%
+    assert.equal(filterDetail(mk(i => (i === 71 ? { o: 9.3, h: 9.4, l: 9.2, c: 9.3 } : base(i))), 71).pullback, false);
+    // T-3 不高于 5 天前 → 不算上涨趋势
+    assert.equal(filterDetail(mk(i => (i <= 63 ? { o: 10.5, h: 10.6, l: 10.4, c: 10.5 } : base(i))), 71).pullback, false);
+    // T 反包回 T-2 上方 → 不算回踩 2 天
+    assert.equal(filterDetail(mk(i => (i === 71 ? { o: 9.9, h: 10.1, l: 9.8, c: 10.0 } : base(i))), 71).down2, false);
   }
   // ② 只涨 1 天不算
   {
@@ -696,14 +695,23 @@ test('filterDetail：五个条件逐条判定（用户指定的规则）', () =>
     b.open[71] = 10.3; b.close[71] = 10.1;
     assert.equal(filterDetail(b, 71).aboveSwing, false, '绿柱不能算突破');
   }
-  // ① 与 ④ 互斥
+  // ① 与 ② 互斥（用户 2026-09-22 的新 ① 要求最近 2 天下跌，② 要求最近 2 天上涨）
   {
-    const b = mk(i => ({ o: 10.0, h: 10.2, l: 9.9, c: 10.1 }));
-    b.open[71] = 10.3; b.close[71] = 10.5;
+    for (const b of [2, 4, 8]) {
+      assert.ok(FILTER_CONFLICTS.some(c => c.bits.includes(1) && c.bits.includes(b)),
+        `①×${b} 必须登记为互斥（实测联合通过率恒为 0），否则界面不会警告`);
+    }
+    // 构造一个满足 ① 的样本，验证它必然不满足 ②（cl[T] < cl[T-2]，而 ② 要 cl[T] > cl[T-2]）
+    const b = mk(i => {
+      if (i <= 63) return { o: 9.0, h: 9.2, l: 8.9, c: 9.0 };
+      if (i <= 68) return { o: 9.5, h: 10.5, l: 9.4, c: 10.0 };
+      if (i === 69) return { o: 10.0, h: 10.1, l: 9.8, c: 9.9 };
+      if (i === 70) return { o: 9.7, h: 9.9, l: 9.5, c: 9.6 };
+      return { o: 9.6, h: 9.8, l: 9.5, c: 9.7 };
+    });
     const d = filterDetail(b, 71);
-    assert.equal(d.aboveSwing, true);
-    assert.equal(d.pullback, false, '已突破前高就不可能同时处于「前高下方 3~15%」');
-    assert.ok(FILTER_CONFLICTS.some(c => c.bits.includes(1) && c.bits.includes(8)));
+    assert.equal(d.pullback, true);
+    assert.equal(d.up2, false, '满足①就不可能同时满足②');
   }
   // ⑤ MACD「零下」金叉
   {

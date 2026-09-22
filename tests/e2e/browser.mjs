@@ -483,13 +483,15 @@ await page.waitForSelector('#modal-setup:not(.hidden)');
 await page.click('#seg-horizon button[data-h="30"]');
 await page.click('#seg-mode button[data-mode="random"]');
 await startSession();
-check(await page.evaluate(() => window.__kline.filterMask) === 3, '换股筛选默认应勾选前两条（mask=3）');
+check(await page.evaluate(() => window.__kline.filterMask) === 1, '换股筛选默认应只勾 ①（mask=1，①与②③④互斥）');
 const filterState = () => page.evaluate(() => {
+  // ① 上涨趋势中回踩 2 天（用户 2026-09-22 口径）
   const s = window.__kline.session, c = s.bars.close, h = s.bars.high, i = s.cur;
-  const ph = Math.max(...Array.from(h.slice(Math.max(0, i - 20), i)));
-  const dd = c[i] / ph - 1;
-  const up = c[i] > c[i - 1] && c[i - 1] > c[i - 2];
-  return { dd, up, pass: dd >= -0.15 && dd <= -0.03 && up };
+  const t3 = i - 3;
+  const dd = c[i] / h[t3] - 1;
+  const trendUp = c[t3] > c[t3 - 5];
+  const down2 = c[i - 1] < c[i - 2] && c[i] < c[i - 2];
+  return { dd, trendUp, down2, pass: trendUp && dd >= -0.10 && dd <= -0.03 && down2 };
 });
 let hits = 0, violates = 0;
 for (let k = 0; k < 6; k++) {
@@ -505,7 +507,7 @@ for (let k = 0; k < 6; k++) {
 }
 console.log(`   筛选下换股成功 ${hits}/6 次，违反条件 ${violates} 次`);
 check(hits >= 1, '筛选下应至少成功换股一次（该日期通过率过低时会失败并给出提示）');
-check(violates === 0, '筛选换到的标的必须同时满足「回落3~15%」与「连涨2天」');
+check(violates === 0, '筛选换到的标的必须满足 ①：T-3高于5天前 + 相对T-3最高价低3~10% + T-1、T 都在 T-2 下方');
 check(/回踩/.test(await text('#sf-now')), '侧栏应显示当前标的对已勾选条件的满足情况');
 await shot('14-filter');
 
@@ -563,11 +565,18 @@ for (const [label, bits, key] of [
   if (after > before) check(c[key] === true, `「${label}」筛选出的标的必须满足该条件`);
   else check(/没有一只|无匹配|极少/.test(await page.evaluate(() => document.getElementById('toast')?.innerText || '')), '无匹配时应给出提示');
 }
-await setFilter([1, 8]);
-check(!(await page.$eval('#dd-warn', el => el.classList.contains('hidden'))), '①+④ 互斥应在下拉里给出警告');
-const nconf = await page.evaluate(() => window.__kline.session.switches.length);
-await page.click('#btn-switch'); await wait(1200);
-check((await page.evaluate(() => window.__kline.session.switches.length)) === nconf, '①+④ 互斥时不应换到任何标的');
+for (const pair of [[1, 2], [1, 4], [1, 8]]) {
+  await setFilter(pair);
+  check(!(await page.$eval('#dd-warn', el => el.classList.contains('hidden'))),
+        `①+${pair[1]} 互斥应在下拉里给出警告`);
+  const nconf = await page.evaluate(() => window.__kline.session.switches.length);
+  await page.click('#btn-switch'); await wait(700);
+  check((await page.evaluate(() => window.__kline.session.switches.length)) === nconf,
+        `①+${pair[1]} 互斥时不应换到任何标的`);
+  check(/互斥/.test(await page.evaluate(() => document.getElementById('toast')?.innerText || '')),
+        `①+${pair[1]} 互斥时应立刻给出明确提示`);
+}
+await setFilter([]);
 await setFilter([1, 2, 4, 8, 16]);
 const b5 = await page.evaluate(() => window.__kline.session.switches.length);
 await page.click('#btn-switch'); await wait(1500);

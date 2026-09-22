@@ -193,7 +193,7 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
     ⚠️ 必须用**前端看到的那份数据**（docs/data/*.bin 解码并取整到分），不能用原始 .day：
        MACD 的 EMA 以第一根为种子，是路径依赖的；用全历史算出来的金叉位置和前端会错开。
     位定义必须与 docs/js/sim.js 的 FILTER_DEFS 一致：
-      1  收盘价相对「前期高点」低 3%~15%
+      1  上涨趋势中回踩2天（T-3高于5天前 + 相对T-3最高价低3~10% + T-1、T 都低于 T-2 收盘）
       2  最近连续 2 天收盘上涨
       4  当日收阳，且开盘价高于前 2 日最高价
       8  当日收阳，且开盘价高于「前期高点」
@@ -244,10 +244,13 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
             continue
         ph = float(prior_hi[i]) if np.isfinite(prior_hi[i]) else np.nan
         v = 0
-        if np.isfinite(ph) and ph > 0:
-            dd = cl[i] / ph - 1
-            if -0.15 <= dd <= -0.03:
-                v |= 1
+        # ① 上涨趋势中回踩 2 天（用户 2026-09-22 指定）：
+        #    T-3 高于 5 天前 + 收盘相对 T-3 最高价低 3%~10% + T-1、T 都收在 T-2 下方
+        t3 = i - 3
+        if (t3 - 5 >= 0 and cl[t3] > cl[t3 - 5] and hi[t3] > 0
+                and -0.10 <= cl[i] / hi[t3] - 1 <= -0.03
+                and cl[i - 1] < cl[i - 2] and cl[i] < cl[i - 2]):
+            v |= 1
         if cl[i] > cl[i - 1] > cl[i - 2]:
             v |= 2
         bullish = cl[i] > op[i]
@@ -264,23 +267,24 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
 def build_filter(stocks, out_dir: str):
     """生成 docs/data/filter.bin —— 「换股筛选」的倒排索引。
 
-    给三个稀有条件建倒排表（实测通过率）：
-        ③ 阳线实体超前2日高  2.3%
+    给四个稀有条件建倒排表（实测通过率）：
+        ① 上涨趋势中回踩2天  8.8%
+        ③ 阳线实体超前2日高   2.3%
         ④ 阳线实体破前高     0.6%
-        ⑤ MACD 零下金叉      2.4%
-    ①(57.6%) ②(23%) 太常见，建表反而占空间，前端拿到候选后实时判定即可。
+        ⑤ MACD 零下金叉     2.4%
+    只有 ②(23%) 太常见，建表反而占空间，前端拿到候选后实时判定即可。
     这样任意组合（含"全选"）都能一次锁定候选，不必盲抽。
 
     格式（全部小端）：
-        'KLF2' | u32 nd | u32 n4 | u32 n8 | u32 n16
-              | u32 dates[nd] | u32 off4[nd+1] | u32 off8[nd+1] | u32 off16[nd+1]
-              | u16 idx4[n4]  | u16 idx8[n8]  | u16 idx16[n16]
+        'KLF3' | u32 nd | u32 n1 | u32 n4 | u32 n8 | u32 n16
+              | u32 dates[nd] | u32 off1[nd+1] | u32 off4[nd+1] | u32 off8[nd+1] | u32 off16[nd+1]
+              | u16 idx1[n1]  | u16 idx4[n4]  | u16 idx8[n8]  | u16 idx16[n16]
     """
     cal = tdx.trading_calendar(start=RANDOM_FROM, end=RANDOM_TO)
     dates = [int(d) for d in cal]
     axis = {"dates": dates, "lo": RANDOM_FROM, "hi": RANDOM_TO}
     nd = len(dates)
-    BITS = (4, 8, 16)
+    BITS = (1, 4, 8, 16)
     lists = {b: [[] for _ in range(nd)] for b in BITS}
     t0 = time.time()
     for r, code in enumerate(stocks):
@@ -299,7 +303,7 @@ def build_filter(stocks, out_dir: str):
         flat[b], offs[b] = arr, off
 
     buf = io.BytesIO()
-    buf.write(b"KLF2")
+    buf.write(b"KLF3")
     buf.write(np.array([nd] + [len(flat[b]) for b in BITS], "<u4").tobytes())
     buf.write(np.array(dates, "<u4").tobytes())
     for b in BITS:

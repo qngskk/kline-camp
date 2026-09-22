@@ -560,8 +560,8 @@ export function macd(closes, fast = 12, slow = 26, signal = 9) {
  *   ⑤ MACD 金叉（DIF 上穿 DEA）
  */
 export const FILTER_DEFS = [
-  { bit: 1, key: 'pullback', short: '回踩3~15%',
-    label: '收盘价相对「前期高点」低 3%~15%（回踩中，尚未突破）' },
+  { bit: 1, key: 'pullback', short: '连涨后回踩3~10%',
+    label: '上涨趋势中回踩 2 天：T-3 高于 5 天前，收盘相对 T-3 最高价低 3%~10%，且 T-1、T 都收在 T-2 下方' },
   { bit: 2, key: 'up2', short: '连涨2天', label: '最近连续 2 天收盘上涨' },
   { bit: 4, key: 'gapBody', short: '阳线实体超前2日高',
     label: '当日收阳，且开盘价高于前 2 日最高价（真跳空，绿柱不算）' },
@@ -574,9 +574,11 @@ export const FILTER_ALL = FILTER_DEFS.reduce((a, d) => a | d.bit, 0);
 /** 「前期高点」的回看根数（不含当日）。20 根≈一个月：够近，能反映"最近的高点"，
  *  又不至于像分形法那样必须等右侧 k 根走完才确认（会漏掉 2 天前刚做出的高点）。 */
 export const PRIOR_HIGH_LOOKBACK = 20;
-/** 互斥的条件组合：①要求价格在前高下方、④要求实体突破前高，同时勾选永远抽不到 */
+/** 互斥的条件组合：同时勾选数学上永远抽不到，界面上直接警告 */
 export const FILTER_CONFLICTS = [
-  { bits: [1, 8], why: '①回踩3~15%（价格在前高下方）与 ④实体破前高（已突破前高）互斥' },
+  { bits: [1, 2], why: '①要求最近 2 天<b>下跌</b>（T-1、T 都收在 T-2 下方），②要求最近 2 天<b>上涨</b>' },
+  { bits: [1, 4], why: '①要求收盘在 T-2 <b>下方</b>，③要求<b>跳空高开</b>且开盘高于前 2 日最高价' },
+  { bits: [1, 8], why: '①要求收盘在 T-2 <b>下方</b>，④要求开盘<b>突破前高</b>' },
 ];
 
 /** 「前期高点」：近 lookback 根 K 线（**不含当日**）里最高价所在的那根，取最后一次出现。
@@ -600,9 +602,17 @@ export function filterDetail(bars, i, macdRes, opt = {}) {
   const c = bars.close, o = bars.open, h = bars.high;
   const pj = priorHighIndex(bars, i, lookback);
   const ph = pj >= 0 ? h[pj] : NaN;
-  const dd = pj >= 0 && ph > 0 ? c[i] / ph - 1 : NaN;
   const bullish = c[i] > o[i];                       // 当日收阳
-  const pullback = pj >= 0 && dd >= -0.15 && dd <= -0.03;   // ① 相对前高低 3%~15%
+  // ① 上涨趋势中回踩 2 天（用户 2026-09-22 指定）：
+  //    · T-3 高于 5 天前         → 这一波是涨上来的
+  //    · 收盘相对 T-3 最高价低 3%~10% → 回踩幅度
+  //    · T-1、T 都收在 T-2 下方   → 确实是往回走了 2 天
+  const t3 = i - 3;
+  const trendUp = t3 - 5 >= 0 && c[t3] > c[t3 - 5];
+  const dd = t3 >= 0 && h[t3] > 0 ? c[i] / h[t3] - 1 : NaN;
+  const inRange = dd >= -0.10 && dd <= -0.03;
+  const down2 = c[i - 1] < c[i - 2] && c[i] < c[i - 2];
+  const pullback = trendUp && inRange && down2;
   const up2 = c[i] > c[i - 1] && c[i - 1] > c[i - 2];       // ② 连涨 2 天
   const gapBody = bullish && o[i] > Math.max(h[i - 1], h[i - 2]);   // ③ 阳线实体跳空过前 2 日高
   const aboveSwing = bullish && pj >= 0 && o[i] > ph;       // ④ 阳线实体突破前高
@@ -612,7 +622,7 @@ export function filterDetail(bars, i, macdRes, opt = {}) {
   const mask = (pullback ? 1 : 0) | (up2 ? 2 : 0) | (gapBody ? 4 : 0) |
                (aboveSwing ? 8 : 0) | (macdCross ? 16 : 0);
   return { ready: true, mask, dd, priorIdx: pj, priorHigh: ph, bullish,
-           pullback, up2, gapBody, aboveSwing, macdCross };
+           trendUp, inRange, down2, pullback, up2, gapBody, aboveSwing, macdCross };
 }
 
 /** mask 是否覆盖选中的全部条件 */

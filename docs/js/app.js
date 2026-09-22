@@ -37,7 +37,7 @@ const state = {
   capital: 100000,
   fees: true,
   fillMode: 'close',
-  filterMask: 3,          // 换股筛选：默认勾选前两条（用户指定）
+  filterMask: 1,          // 换股筛选：默认只勾 ①（①与②③④互斥，不能同时勾）
   findex: null,           // filter.bin 倒排索引
   findexFailed: false,
   picked: null,
@@ -128,7 +128,7 @@ function barsMacd(bars) {
 function maskAt(bars, i) { return filterDetail(bars, i, barsMacd(bars)).mask; }
 
 /** 筛选倒排索引 filter.bin：给三个稀有条件（③阳线实体超前2日高 / ④阳线实体破前高 / ⑤MACD零下金叉）建表 */
-const FILTER_RARE_BITS = [4, 8, 16];
+const FILTER_RARE_BITS = [1, 4, 8, 16];
 async function loadFilterIndex() {
   if (state.findex || state.findexFailed) return state.findex;
   try {
@@ -137,10 +137,11 @@ async function loadFilterIndex() {
     const buf = await res.arrayBuffer();
     const dv = new DataView(buf);
     const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-    if (magic !== 'KLF2') throw new Error('bad magic');
+    if (magic !== 'KLF3') throw new Error('bad magic');
     const nd = dv.getUint32(4, true);
-    const n = { 4: dv.getUint32(8, true), 8: dv.getUint32(12, true), 16: dv.getUint32(16, true) };
-    let off = 20;
+    const n = { 1: dv.getUint32(8, true), 4: dv.getUint32(12, true),
+                8: dv.getUint32(16, true), 16: dv.getUint32(20, true) };
+    let off = 24;
     const dates = new Int32Array(nd);
     for (let i = 0; i < nd; i++) dates[i] = dv.getUint32(off + i * 4, true);
     off += nd * 4;
@@ -531,6 +532,11 @@ async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
 function doSwitch() {
   const s = state.session;
   if (!s || !s.canSwitch) return;                  // 含「行情走完」状态，否则会死局
+  const bad = FILTER_CONFLICTS.find(c => c.bits.every(b => state.filterMask & b));
+  if (bad) {                                        // 互斥组合直接说清楚，不用去扫全市场
+    toast('⚠️ ' + bad.why + ' —— 数学上互斥，同时勾选永远抽不到，请去掉其中一个。', 'warn', 7000);
+    return;
+  }
   const btn = $('btn-switch');
   btn.disabled = true; btn.textContent = '换股中…';
   const avoid = s.switches.slice(-120).map(x => x.to);   // 本局换过的尽量不重复
@@ -844,7 +850,7 @@ function bind() {
     const bad = FILTER_CONFLICTS.find(c => c.bits.every(b => state.filterMask & b));
     const w = $('dd-warn');
     w.classList.toggle('hidden', !bad);
-    if (bad) w.textContent = '⚠️ ' + bad.why + ' —— 同时勾选永远抽不到，请二选一。';
+    if (bad) w.innerHTML = '⚠️ ' + bad.why + ' —— 数学上互斥，同时勾选永远抽不到，请去掉其中一个。';
     renderAll(false);
   };
   boxesInit();
