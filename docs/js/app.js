@@ -6,7 +6,7 @@
  *   → 点「进入下一日」揭示 bar[cur+1] → 严格模式此时按开盘价成交委托篮 → 循环
  */
 import { decodeKLC, fmtDate } from './decode.js';
-import { Session, BOARDS, FILL_MODES, PRE_BARS, FILTER_DEFS, FILTER_ALL, FILTER_CONFLICTS,
+import { Session, BOARDS, FILL_MODES, PRE_BARS, MIN_LISTED, FILTER_DEFS, FILTER_ALL, FILTER_CONFLICTS,
          eligibleRange, pickStartIndex, macd, filterDetail, filterHit } from './sim.js';
 import { KChart } from './chart.js';
 
@@ -169,7 +169,10 @@ function postingRows(fi, bit, col) {
 
 /** 按 horizon 建可抽样本表（含累计权重） *//** 按 horizon 建可抽样本表（含累计权重） */
 function candidatesFor(horizon) {
-  if (state.candCache.has(horizon)) return state.candCache.get(horizon);
+  // 注意：股票池还没加载完时算出来的空表**不能进缓存** ——
+  // 否则用户抢跑点一次「开始训练」，缓存就被污染成 0，后面一直显示"样本池 0 只"。
+  const cacheable = state.stocks.length > 0;
+  if (cacheable && state.candCache.has(horizon)) return state.candCache.get(horizon);
   const list = [];
   let total = 0;
   for (const s of state.stocks) {
@@ -180,7 +183,7 @@ function candidatesFor(horizon) {
     total += w;
   }
   const out = { list, total };
-  state.candCache.set(horizon, out);
+  if (cacheable) state.candCache.set(horizon, out);
   return out;
 }
 
@@ -197,8 +200,14 @@ function weightedPick(cands) {
 // ---------------------------------------------------------------- 开局
 async function startSession() {
   const horizon = state.horizon;
+  if (!state.loaded) { setupError('数据还在加载中，请稍等一下再点「开始训练」'); return; }
   const cands = candidatesFor(horizon);
-  if (!cands.total) { setupError('本地数据里没有满足条件的样本'); return; }
+  if (!cands.total) {
+    setupError(`本地数据里没有满足条件的样本（已加载 ${state.stocks.length} 只股票，` +
+      `但按「上市满 ${MIN_LISTED} 个交易日 + 前 ${PRE_BARS} 根 + 后 ${horizon} 根 K 线」筛完一只都不剩）。` +
+      `请确认 docs/data/ 数据完整，Ctrl+F5 强制刷新后重试。`);
+    return;
+  }
   $('btn-start').disabled = true;
   $('btn-start').textContent = '加载中…';
   try {
@@ -995,15 +1004,20 @@ window.__kline.report = () => { const t = klineDump(); console.log(t);
   return t; };        // 调试/自动化测试钩子：__kline.chart / __kline.session
   bind();
   updateFillHint();
+  const startBtn = $('btn-start');
   try {
     await loadIndex();
     await loadBench();
     $('pool-hint').textContent = '正在统计样本池…';
     updatePoolHint();
+    setupError('');
+    startBtn.disabled = false;
+    startBtn.textContent = '开始训练';
   } catch (e) {
     $('pool-hint').innerHTML = '<span style="color:#f87171">' + e.message +
       '</span>（请用 HTTP 服务打开本页，不要直接双击 html 文件）';
-    $('btn-start').disabled = true;
+    startBtn.textContent = '数据加载失败';
+    startBtn.disabled = true;
   }
   show('#modal-setup');
 }

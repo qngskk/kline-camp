@@ -54,8 +54,26 @@ const startSession = async () => {
   await wait(550);
 };
 
-console.log('1. 开局设置');
 await page.goto(BASE_URL, { waitUntil: 'networkidle2' });
+console.log('0. 冷启动：数据加载完成前不能开局');
+await page.waitForSelector('#modal-setup:not(.hidden)');
+await wait(600);
+const boot = await page.evaluate(() => ({
+  loaded: window.__kline.loaded, stocks: window.__kline.stocks.length,
+  btn: { disabled: document.getElementById('btn-start').disabled,
+         text: document.getElementById('btn-start').textContent },
+  pool: document.getElementById('pool-hint').innerText.replace(/\s+/g, ' '),
+  err: document.getElementById('setup-err').innerText,
+}));
+console.log('   ', JSON.stringify({ loaded: boot.loaded, stocks: boot.stocks, btn: boot.btn }));
+check(boot.loaded === true && boot.stocks > 4000, '冷启动后应已加载完整股票池');
+check(boot.btn.disabled === false && /开始训练/.test(boot.btn.text), '加载完成后按钮应可用');
+check(!/样本池 0 /.test(boot.pool), '样本池不应是 0（抢跑曾把空候选表缓存住）');
+check(/样本池 \d+ 只股票/.test(boot.pool), '样本池提示应正常渲染');
+check(boot.err === '', '不应残留启动错误');
+
+console.log('1. 开局设置');
+
 await page.waitForSelector('#modal-setup:not(.hidden)');
 const pool = await text('#pool-hint');
 console.log('   样本池:', pool);
