@@ -768,6 +768,16 @@ test('filterDetail：五个条件逐条判定（用户指定的规则）', () =>
     assert.ok(m.dif[below] < 0, `零下金叉时 DIF=${m.dif[below].toFixed(3)} 应 < 0`);
   }
   assert.equal(filterDetail(mk(i => ({ o: 10, h: 10, l: 10, c: 10 })), 10).ready, false);
+  // 回归：下标 60~69 曾是「死区」—— filterDetail 里写死 i<70，而换股只要求 i>=PRE_BARS(60)，
+  // 结果 2024-12-04 ~ 12-17 这 10 个交易日任何条件都判不出来，一只票都选不到。
+  {
+    const b = mk(i => ({ o: 10.0, h: 10.2, l: 9.9, c: 10.1 }));
+    for (let i = PRE_BARS; i <= 75; i++) {
+      assert.equal(filterDetail(b, i).ready, true, `i=${i} 应该可以判定（不得再有死区）`);
+    }
+    assert.equal(filterDetail(b, PRE_BARS - 1).ready, false, '低于 PRE_BARS 才不可判定');
+    assert.equal(PRE_BARS, 60);
+  }
 });
 
 function mk2(n, c) {

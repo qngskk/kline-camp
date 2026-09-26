@@ -168,6 +168,7 @@ def build_bench(out_dir: str, index_code: str = "sh000300"):
 
 FILTER_LOOKBACK = 60
 FILTER_PRIOR_N = 20         # 「前期高点」= 近 20 根（不含当日）的最高价，≈一个月
+FILTER_MIN_IDX = 60         # 筛选判定的最低下标，必须与前端 PRE_BARS 一致（写 70 会留下一个 10 天的死区）
 
 
 def _ema(x: np.ndarray, n: int) -> np.ndarray:
@@ -241,7 +242,7 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
     for k in range(nd):
         d = axis["dates"][k]
         i = int(np.searchsorted(dates, d))
-        if i >= n or int(dates[i]) != d or i < 70:
+        if i >= n or int(dates[i]) != d or i < FILTER_MIN_IDX:
             continue
         if d < lo or d > hi_d:
             continue

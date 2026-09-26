@@ -19,7 +19,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-from tools.build_data import (FILTER_PRIOR_N, RANDOM_FROM, RANDOM_TO,
+from tools.build_data import (FILTER_MIN_IDX, FILTER_PRIOR_N, RANDOM_FROM, RANDOM_TO,
                               _ema, _r2, decode_pack)  # noqa: E402
 from src import tdx  # noqa: E402
 import numpy as np  # noqa: E402
@@ -32,7 +32,7 @@ def mask_of(code: str, date: int) -> int:
     dates = d["dates"].astype("i8")
     n = cl.size
     i = int(np.searchsorted(dates, date))
-    if i >= n or int(dates[i]) != date or i < 70:
+    if i >= n or int(dates[i]) != date or i < FILTER_MIN_IDX:
         return 0
     dif = _ema(cl, 12) - _ema(cl, 26); dea = _ema(dif, 9)
     ph = float(hi[max(0, i - FILTER_PRIOR_N):i].max())

@@ -595,7 +595,10 @@ export function priorHighIndex(bars, i, lookback = PRIOR_HIGH_LOOKBACK) {
 export function filterDetail(bars, i, macdRes, opt = {}) {
   const lookback = opt.priorLookback ?? PRIOR_HIGH_LOOKBACK;
   const bad = { ready: false, mask: 0 };
-  if (!bars || i < 70 || i >= bars.n) return bad;
+  // 最低下标必须与 app 的 PRE_BARS 一致：换股只要求 i >= PRE_BARS(60)，
+  // 这里若写死 70，下标 60~69（2024-12-04 ~ 12-17）就成了死区，任何条件都判不出来。
+  // i>=60 时各条件都安全：① 需要 i>=8、④ 需要 i>=20、⑥⑦ 需要 i>=19
+  if (!bars || i < PRE_BARS || i >= bars.n) return bad;
   const c = bars.close, o = bars.open, h = bars.high, l = bars.low;
   const pj = priorHighIndex(bars, i, lookback);
   const ph = pj >= 0 ? h[pj] : NaN;

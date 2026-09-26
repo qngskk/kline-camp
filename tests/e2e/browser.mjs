@@ -674,6 +674,39 @@ if (a5 > b5) {
 }
 await shot('15-filter5');
 
+console.log('9d-2. 回归：下标 60~69（2024-12-04 ~ 12-17）曾是无条件死区');
+{
+  const early = await page.evaluate(() => {
+    const s = window.__kline.session;
+    const list = [];
+    for (let i = 0; i < s.bars.n; i++) list.push([i, s.bars.dates[i]]);
+    const idx = list.find(x => x[1] >= 20241211)[0];
+    return { idx, date: s.bars.dates[idx], horizon: s.horizon };
+  });
+  console.log('   切到下标', early.idx, '=', early.date);
+  const fixed = await page.evaluate((idx) => {
+    const s = window.__kline.session;
+    s.cur = idx; s.startIdx = idx; s.day = 0;
+    s.lastIdx = idx + s.horizon;
+    s.endDate = s.bars.dates[s.lastIdx];
+    s.shares = 0; s.costTotal = 0; s.cash = s.capital;
+    window.__kline.renderAll();
+    return { cur: s.cur, date: s.date, endDate: s.endDate, ready:
+      window.__kline.session.bars.dates[s.cur] === s.date };
+  }, early.idx);
+  check(fixed.ready, '会话日期切换成功');
+  await setFilter([4]);
+  const before = await page.evaluate(() => window.__kline.session.switches.length);
+  await page.click('#btn-switch'); await wait(1200);
+  const after = await page.evaluate(() => window.__kline.session.switches.length);
+  const cc = await condAt();
+  console.log('   只勾③在该日期换股:', after > before ? '换到 ' + cc.code : '无匹配',
+              ' break2=' + cc.break2);
+  check(after > before, `${early.date} 这天必须有票满足③（此前整段是死区）`);
+  check(cc.break2 === true, '换到的票必须满足③');
+  await setFilter([]);
+}
+
 console.log('9e. 标的行情提前走完（卡死）时的兜底 + 诊断导出');
 await setFilter([]);                                   // 关筛选，避免换股抽不到影响本步
 const stuck = await page.evaluate(() => {
