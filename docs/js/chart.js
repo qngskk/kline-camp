@@ -43,7 +43,7 @@ export class KChart {
     this.maPeriods = [5, 10, 20, 60];
     this.maCustom = 0;        // 自定义均线周期（工具栏输入框，0 = 不显示）
     this.maCustomArr = null;
-    this.showMA = true;
+    this.maOn = { 5: true, 10: true, 20: true, 60: true };   // 每条内置均线独立开关
     this.showMACD = true;   // MACD 副图
     this.macdRes = null;
     this.lines = [];        // 手动画线，锚在「数据坐标」(bar 下标, 价格)，缩放平移后不会漂
@@ -98,7 +98,26 @@ export class KChart {
   clearLines() { this.lines = []; this.draft = null; this.render(); return this.lines.length; }
   undoLine() { const n = this.lines.pop(); this.draft = null; this.render(); return !!n; }
   setCost(price) { this.cost = price; this.render(); }
-  setShowMA(on) { this.showMA = !!on; this.render(); }
+  /** 单条内置均线开关 */
+  setMAOn(period, on) {
+    if (!(period in this.maOn)) return;
+    this.maOn[period] = !!on;
+    this.render();
+  }
+  /** 一次性开关全部内置均线（保留给自动化测试用） */
+  setShowMA(on) {
+    for (const p of this.maPeriods) this.maOn[p] = !!on;
+    this.render();
+  }
+  /** 当前内置均线里开着的条数 */
+  get maOnCount() { return this.maPeriods.filter(p => this.maOn[p]).length; }
+  /** 图例用：正在显示的内置均线 [{p, color}] */
+  get maLegend() {
+    return this.maPeriods.map((p, k) => ({ p, color: MA_COLORS[k % MA_COLORS.length], on: !!this.maOn[p] }))
+      .filter(x => x.on);
+  }
+  /** 内置全关且无自定义线时视为「均线关闭」 */
+  get showMA() { return this.maOnCount > 0; }
   /** 设置自定义均线周期（天数）。0 或非法值 = 关掉 */
   setCustomMA(n) {
     const v = Math.floor(Number(n) || 0);
@@ -200,8 +219,12 @@ export class KChart {
       if (bars.high[i] > pmax) pmax = bars.high[i];
       if (bars.vol[i] > vmax) vmax = bars.vol[i];
     }
-    if (this.showMA) {
-      for (const arr of this.ma) {
+    {
+      // 纵轴范围要把**正在显示的**均线也算进去，否则线会被裁掉
+      const shown = [];
+      this.maPeriods.forEach((p, k) => { if (this.maOn[p]) shown.push(this.ma[k]); });
+      if (this.maCustomArr) shown.push(this.maCustomArr);
+      for (const arr of shown) {
         for (let i = vf; i <= vt; i++) {
           const v = arr[i];
           if (isFinite(v)) { if (v < pmin) pmin = v; if (v > pmax) pmax = v; }
@@ -281,7 +304,9 @@ export class KChart {
     {
       ctx.lineWidth = 1.2;
       const series = [];
-      if (this.showMA) this.ma.forEach((arr, k) => series.push([arr, MA_COLORS[k % MA_COLORS.length]]));
+      this.maPeriods.forEach((p, k) => {
+        if (this.maOn[p]) series.push([this.ma[k], MA_COLORS[k % MA_COLORS.length]]);
+      });
       if (this.maCustomArr) series.push([this.maCustomArr, MA_CUSTOM_COLOR]);
       series.forEach(([arr, color]) => {
         ctx.strokeStyle = color;
@@ -479,8 +504,9 @@ export class KChart {
       lines.push(['DIF', dif[i].toFixed(3), '#f8fafc']);
       lines.push(['DEA', dea[i].toFixed(3), '#fbbf24']);
     }
-    if (this.showMA) {                       // 均线的值也列出来，方便直接读乖离
-      if (this.showMA) this.maPeriods.forEach((p, k) => {
+    {                                        // 均线的值也列出来，方便直接读乖离
+      this.maPeriods.forEach((p, k) => {
+        if (!this.maOn[p]) return;
         const v = this.ma[k] ? this.ma[k][i] : NaN;
         if (isFinite(v)) lines.push(['MA' + p, v.toFixed(2), MA_COLORS[k % MA_COLORS.length]]);
       });

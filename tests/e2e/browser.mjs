@@ -135,16 +135,49 @@ const maOn = await maPixels();
 console.log('   默认均线像素:', maOn);
 check(maOn > 500, '默认应显示均线');
 check(await page.$eval('#btn-ma', el => el.classList.contains('on')), '均线按钮默认应为开启态');
-await page.click('#btn-ma'); await wait(350);
-const maOff = await maPixels();
-console.log('   关闭后均线像素:', maOff, '（MACD 金色 DEA 线与均线取色范围接近，允许残留少量）');
-check(!(await page.evaluate(() => window.__kline.chart.showMA)), '关闭后 showMA 应为 false');
-check(maOff < maOn * 0.15, `关闭后均线像素应大幅下降（${maOn} → ${maOff}）`);
-check(await page.$eval('#btn-ma', el => !el.classList.contains('on')), '关闭后按钮应为关闭态');
-await page.click('#btn-ma'); await wait(350);
-check((await maPixels()) > 500, '再次打开应恢复均线');
+check(await page.$eval('#ma-count', el => el.textContent) === '4', '默认应有 4 条均线');
 
-// 自定义均线：输入天数 → 多一条独立均线（不归「均线」开关管）
+// 均线下拉：4 条内置各自开关
+const oneColor = (rgb) => page.evaluate((want) => {
+  const src = document.getElementById('chart');
+  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+  const x = c.getContext('2d'); x.drawImage(src, 0, 0);
+  const d = x.getImageData(0, 0, c.width, Math.floor(c.height * 0.62)).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (Math.abs(d[i] - want[0]) < 40 && Math.abs(d[i + 1] - want[1]) < 40 && Math.abs(d[i + 2] - want[2]) < 40) n++;
+  }
+  return n;
+}, rgb);
+const MA_RGB = { 5: [245, 158, 11], 10: [56, 189, 248], 20: [192, 132, 252], 60: [244, 114, 182] };
+check(await page.$eval('#ma-dd', el => el.classList.contains('hidden')), '均线下拉默认应收起');
+await page.click('#btn-ma'); await wait(250);
+check(!(await page.$eval('#ma-dd', el => el.classList.contains('hidden'))), '点均线按钮应展开下拉');
+check((await page.$$eval('#ma-dd .dd-item', els => els.length)) === 4, '下拉里应有 4 条内置均线');
+const p5before = await oneColor(MA_RGB[5]), p10before = await oneColor(MA_RGB[10]);
+await page.evaluate(() => { const cb = document.querySelector('#ma-dd input[data-ma="5"]'); cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true })); });
+await wait(350);
+const maState = await page.evaluate(() => ({ on: window.__kline.chart.maOn, n: window.__kline.chart.maOnCount }));
+console.log('   关掉 MA5 后:', JSON.stringify(maState), ' 计数=', await page.$eval('#ma-count', el => el.textContent));
+check(maState.n === 3 && maState.on[10] === true, '关掉 MA5 不应影响其它均线');
+check((await oneColor(MA_RGB[5])) < p5before * 0.15, 'MA5 应消失');
+check((await oneColor(MA_RGB[10])) > p10before * 0.5, 'MA10 应仍在');
+await page.evaluate(() => { const cb = document.querySelector('#ma-dd input[data-ma="5"]'); cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true })); });
+await wait(300);
+// 全部关掉
+await page.evaluate(() => document.querySelectorAll('#ma-dd input[data-ma]').forEach(cb => {
+  cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true }));
+}));
+await wait(350);
+check((await maPixels()) < maOn * 0.15, '全部关掉后不应再有均线');
+check(await page.$eval('#ma-count', el => el.textContent) === '0', '全关后计数应为 0');
+await page.evaluate(() => document.querySelectorAll('#ma-dd input[data-ma]').forEach(cb => {
+  cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true }));
+}));
+await wait(350);
+check((await maPixels()) > 500, '重新勾选后应恢复均线');
+
+// 自定义均线：输入天数 → 多一条独立均线（不归内置均线的开关管）
 const cyanPixels = () => page.evaluate(() => {
   const src = document.getElementById('chart');
   const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
@@ -171,11 +204,18 @@ check(cust.period === 120 && cust.val !== null, '输入 120 后应算出 120 日
 check(cust.legend === '120', '图例应显示 MA120');
 check((await cyanPixels()) > cyan0 + 500, '应画出这条均线');
 check(cust.val > 0 && cust.val < 1e4, '均线值应在合理区间');
-// 关掉内置均线，自定义那条要还在
-await page.click('#btn-ma'); await wait(350);
+// 关掉全部内置均线，自定义那条要还在
+await page.evaluate(() => document.querySelectorAll('#ma-dd input[data-ma]').forEach(cb => {
+  cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true }));
+}));
+await wait(350);
 const cyanOff = await cyanPixels();
 check(cyanOff > 500, `关掉内置均线后自定义均线仍在（青色像素 ${cyanOff}）`);
-await page.click('#btn-ma'); await wait(350);
+check((await maPixels()) < maOn * 0.15, '内置均线应已全部关闭');
+await page.evaluate(() => document.querySelectorAll('#ma-dd input[data-ma]').forEach(cb => {
+  cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true }));
+}));
+await wait(300);
 // 非法输入 → 清空并关闭
 await page.evaluate(() => { const e = document.getElementById('ma-custom'); e.value = '1'; e.dispatchEvent(new Event('change')); });
 await wait(300);

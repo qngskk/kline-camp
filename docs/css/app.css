@@ -353,3 +353,13 @@ input[type=text]:focus, input[type=number]:focus { border-color: var(--accent); 
 .mini.num:focus { border-color: var(--accent); background: rgba(56,189,248,.12); }
 .mini.num::-webkit-outer-spin-button, .mini.num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .mini.num { -moz-appearance: textfield; appearance: textfield; }
+
+/* 均线下拉（挂在图表工具栏里） */
+.ma-wrap { position: relative; display: inline-flex; }
+.dd.tight { left: auto; right: 0; width: 196px; padding: 9px 11px; }
+.dd-item .ma-dot { display: inline-block; width: 9px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.dd-ma-custom {
+  display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text);
+  padding: 6px 0 2px; margin-top: 4px; border-top: 1px dashed var(--line);
+}
+.dd-ma-custom .mini.num { width: 62px; margin-left: auto; }

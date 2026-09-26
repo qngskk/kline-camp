@@ -860,17 +860,51 @@ function bind() {
   });
   document.addEventListener('click', e => {
     if (dd.classList.contains('hidden')) return;
-    if (!dd.contains(e.target) && e.target !== $('btn-filter')) dd.classList.add('hidden');
+    if (!dd.contains(e.target) && !e.target.closest('#btn-filter')) dd.classList.add('hidden');
   });
-  // 自定义均线：输入天数即时生效（独立于「均线」开关）
-  $('ma-custom').addEventListener('change', e => {
-    const v = state.chart.setCustomMA(e.target.value);
-    e.target.value = v || '';
+  // ---- 均线下拉：4 条内置均线各自开关 + 1 条自定
+  const maDd = $('ma-dd');
+  function syncMAUI() {
+    const n = state.chart.maOnCount + (state.chart.maCustomArr ? 1 : 0);
+    $('ma-count').textContent = n;
+    $('btn-ma').classList.toggle('on', n > 0);
+    // 图例只列**正在显示**的均线
+    $('leg-ma').innerHTML = state.chart.maLegend
+      .map(x => `<i class="line" style="background:${x.color}"></i>MA${x.p}`).join(' ');
+    const v = state.chart.maCustom;
+    $('ma-custom-on').checked = !!v;
     $('leg-custom').classList.toggle('hidden', !v);
     if (v) $('leg-custom-n').textContent = v;
-    toast(v ? `已显示 MA${v}` : '已关闭自定义均线', 'info', 1500);
+  }
+  document.querySelectorAll('#ma-dd input[data-ma]').forEach(cb => {
+    const p = Number(cb.dataset.ma);
+    cb.checked = !!state.chart.maOn[p];
+    cb.addEventListener('change', () => {
+      state.chart.setMAOn(p, cb.checked);
+      syncMAUI();
+    });
   });
+  function applyCustom(input) {
+    const v = state.chart.setCustomMA(input.value);
+    input.value = v || '';
+    syncMAUI();
+    toast(v ? `已显示 MA${v}` : '已关闭自定义均线', 'info', 1400);
+  }
+  $('ma-custom').addEventListener('change', e => applyCustom(e.target));
   $('ma-custom').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+  $('ma-custom-on').addEventListener('change', e => {
+    if (e.target.checked) { $('ma-custom').focus(); }
+    else { $('ma-custom').value = ''; state.chart.setCustomMA(0); syncMAUI(); toast('已关闭自定义均线', 'info', 1400); }
+  });
+  $('btn-ma').addEventListener('click', e => {
+    e.stopPropagation();
+    maDd.classList.toggle('hidden');
+  });
+  document.addEventListener('click', e => {
+    if (maDd.classList.contains('hidden')) return;
+    if (!maDd.contains(e.target) && !e.target.closest('#btn-ma')) maDd.classList.add('hidden');
+  });
+  syncMAUI();
   $('btn-macd').addEventListener('click', () => {
     const on = !state.chart.showMACD;
     state.chart.setShowMACD(on);
@@ -902,12 +936,6 @@ function bind() {
   }));
 
   // 均线开关（默认开）
-  $('btn-ma').addEventListener('click', () => {
-    const on = !state.chart.showMA;
-    state.chart.setShowMA(on);
-    $('btn-ma').classList.toggle('on', on);
-    toast(on ? '已显示均线 MA5 / MA10 / MA20 / MA60' : '已关闭均线显示', 'info', 1600);
-  });
 
   // 手动划线
   $('btn-draw').addEventListener('click', () => {
