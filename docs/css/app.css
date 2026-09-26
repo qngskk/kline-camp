@@ -344,3 +344,12 @@ input[type=text]:focus, input[type=number]:focus { border-color: var(--accent); 
   .hud-item b { font-size: 13px; }
   .big-return { font-size: 38px; }
 }
+
+.mini.num {
+  width: 62px; padding: 4px 6px; text-align: center; font-size: 12px;
+  background: rgba(148,163,184,.10); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; outline: none;
+}
+.mini.num:focus { border-color: var(--accent); background: rgba(56,189,248,.12); }
+.mini.num::-webkit-outer-spin-button, .mini.num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.mini.num { -moz-appearance: textfield; appearance: textfield; }

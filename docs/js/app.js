@@ -862,6 +862,15 @@ function bind() {
     if (dd.classList.contains('hidden')) return;
     if (!dd.contains(e.target) && e.target !== $('btn-filter')) dd.classList.add('hidden');
   });
+  // 自定义均线：输入天数即时生效（独立于「均线」开关）
+  $('ma-custom').addEventListener('change', e => {
+    const v = state.chart.setCustomMA(e.target.value);
+    e.target.value = v || '';
+    $('leg-custom').classList.toggle('hidden', !v);
+    if (v) $('leg-custom-n').textContent = v;
+    toast(v ? `已显示 MA${v}` : '已关闭自定义均线', 'info', 1500);
+  });
+  $('ma-custom').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
   $('btn-macd').addEventListener('click', () => {
     const on = !state.chart.showMACD;
     state.chart.setShowMACD(on);

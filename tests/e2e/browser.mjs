@@ -144,6 +144,46 @@ check(await page.$eval('#btn-ma', el => !el.classList.contains('on')), '关闭�
 await page.click('#btn-ma'); await wait(350);
 check((await maPixels()) > 500, '再次打开应恢复均线');
 
+// 自定义均线：输入天数 → 多一条独立均线（不归「均线」开关管）
+const cyanPixels = () => page.evaluate(() => {
+  const src = document.getElementById('chart');
+  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+  const x = c.getContext('2d'); x.drawImage(src, 0, 0);
+  const d = x.getImageData(0, 0, c.width, Math.floor(c.height * 0.65)).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i] < 80 && d[i + 1] > 190 && d[i + 2] > 200) n++;
+  return n;
+});
+const cyan0 = await cyanPixels();
+await page.click('#ma-custom');
+await page.type('#ma-custom', '120');
+await page.keyboard.press('Enter');
+await wait(400);
+const cust = await page.evaluate(() => {
+  const c = window.__kline.chart, i = window.__kline.session.cur;
+  return { period: c.maCustom, val: c.maCustomArr ? c.maCustomArr[i] : null,
+           legend: document.getElementById('leg-custom').classList.contains('hidden') ? '' :
+                   document.getElementById('leg-custom-n').textContent,
+           input: document.getElementById('ma-custom').value };
+});
+console.log('   自定义均线:', JSON.stringify(cust), ' 青色像素', cyan0, '→', await cyanPixels());
+check(cust.period === 120 && cust.val !== null, '输入 120 后应算出 120 日均线');
+check(cust.legend === '120', '图例应显示 MA120');
+check((await cyanPixels()) > cyan0 + 500, '应画出这条均线');
+check(cust.val > 0 && cust.val < 1e4, '均线值应在合理区间');
+// 关掉内置均线，自定义那条要还在
+await page.click('#btn-ma'); await wait(350);
+const cyanOff = await cyanPixels();
+check(cyanOff > 500, `关掉内置均线后自定义均线仍在（青色像素 ${cyanOff}）`);
+await page.click('#btn-ma'); await wait(350);
+// 非法输入 → 清空并关闭
+await page.evaluate(() => { const e = document.getElementById('ma-custom'); e.value = '1'; e.dispatchEvent(new Event('change')); });
+await wait(300);
+const bad = await page.evaluate(() => ({ p: window.__kline.chart.maCustom,
+  v: document.getElementById('ma-custom').value,
+  hidden: document.getElementById('leg-custom').classList.contains('hidden') }));
+check(bad.p === 0 && bad.v === '' && bad.hidden, '非法天数应清空输入并关闭该均线');
+
 console.log('2c. 手动划线：按住=起点，松开=终点');
 const cbox = await page.$eval('#chart', el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
 const lineCount = () => page.evaluate(() => window.__kline.chart.lines.length);

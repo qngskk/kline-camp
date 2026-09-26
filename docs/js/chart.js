@@ -13,6 +13,7 @@ const MUTED = '#8b9bb4';
 const GRID = 'rgba(148,163,184,0.13)';
 const CROSS = 'rgba(226,232,240,0.75)';
 const MA_COLORS = ['#f59e0b', '#38bdf8', '#c084fc', '#f472b6'];
+const MA_CUSTOM_COLOR = '#22d3ee';   // 自定义均线（输入天数）用青色
 
 function niceTicks(min, max, count) {
   if (!(max > min)) return [min];
@@ -40,6 +41,8 @@ export class KChart {
     this.pad = { l: 8, r: 64, t: 10, b: 22 };
     this.drag = null;
     this.maPeriods = [5, 10, 20, 60];
+    this.maCustom = 0;        // 自定义均线周期（工具栏输入框，0 = 不显示）
+    this.maCustomArr = null;
     this.showMA = true;
     this.showMACD = true;   // MACD 副图
     this.macdRes = null;
@@ -61,6 +64,7 @@ export class KChart {
     this.draft = null;
     if (bars) {
       this.ma = this.maPeriods.map(p => movingAverage(bars.close, p));
+      this.maCustomArr = this.maCustom >= 2 ? movingAverage(bars.close, this.maCustom) : null;
       this.macdRes = macd(bars.close);
       const end = limit;
       const from = Math.max(0, end - Math.min(120, end + 1) + 1);
@@ -95,6 +99,14 @@ export class KChart {
   undoLine() { const n = this.lines.pop(); this.draft = null; this.render(); return !!n; }
   setCost(price) { this.cost = price; this.render(); }
   setShowMA(on) { this.showMA = !!on; this.render(); }
+  /** 设置自定义均线周期（天数）。0 或非法值 = 关掉 */
+  setCustomMA(n) {
+    const v = Math.floor(Number(n) || 0);
+    this.maCustom = v >= 2 && v <= 500 ? v : 0;
+    this.maCustomArr = (this.maCustom && this.bars) ? movingAverage(this.bars.close, this.maCustom) : null;
+    this.render();
+    return this.maCustom;
+  }
   setShowMACD(on) { this.showMACD = !!on; this.render(); }
 
   setView(from, to) {
@@ -264,11 +276,15 @@ export class KChart {
       }
     }
 
-    // --- 均线
-    if (this.showMA) {
+    // --- 均线：内置的 MA5/10/20/60 归「均线」开关管；
+    //     输入框那条是独立的（这样才能只看 MA120、关掉其余均线）
+    {
       ctx.lineWidth = 1.2;
-      this.ma.forEach((arr, k) => {
-        ctx.strokeStyle = MA_COLORS[k % MA_COLORS.length];
+      const series = [];
+      if (this.showMA) this.ma.forEach((arr, k) => series.push([arr, MA_COLORS[k % MA_COLORS.length]]));
+      if (this.maCustomArr) series.push([this.maCustomArr, MA_CUSTOM_COLOR]);
+      series.forEach(([arr, color]) => {
+        ctx.strokeStyle = color;
         ctx.beginPath();
         let started = false;
         for (let i = vf; i <= vt; i++) {
@@ -464,10 +480,14 @@ export class KChart {
       lines.push(['DEA', dea[i].toFixed(3), '#fbbf24']);
     }
     if (this.showMA) {                       // 均线的值也列出来，方便直接读乖离
-      this.maPeriods.forEach((p, k) => {
+      if (this.showMA) this.maPeriods.forEach((p, k) => {
         const v = this.ma[k] ? this.ma[k][i] : NaN;
         if (isFinite(v)) lines.push(['MA' + p, v.toFixed(2), MA_COLORS[k % MA_COLORS.length]]);
       });
+      if (this.maCustomArr) {
+        const v = this.maCustomArr[i];
+        if (isFinite(v)) lines.push(['MA' + this.maCustom, v.toFixed(2), MA_CUSTOM_COLOR]);
+      }
     }
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     const w = 118, lh = 15, h = lines.length * lh + 10;
