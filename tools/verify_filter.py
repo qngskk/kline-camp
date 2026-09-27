@@ -52,38 +52,94 @@ def mask_of(code: str, date: int) -> int:
     if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1] and dif[i] < 0:
         v |= 16
     body = abs(cl[i] - op[i])
-    lower = min(op[i], cl[i]) - lo[i]
-    upper = hi[i] - max(op[i], cl[i])
+    big = cl[i - 1] > 0 and body / cl[i - 1] >= 0.06
     hi20 = hi[i - 19:i + 1].max(); lo20 = lo[i - 19:i + 1].min()
     span = hi20 - lo20
     pos = (cl[i] - lo20) / span if span > 0 else 0.5
-    if lower > 0 and lower >= 2 * body and pos <= 0.30:
+    if big and cl[i] > op[i] and pos <= 0.20:
         v |= 32
-    if upper > 0 and upper >= 2 * body and pos >= 0.70:
+    if big and cl[i] < op[i] and pos >= 0.80:
         v |= 64
     return v
 
 
+def masks_of(code: str, dates):
+    """一次算出一只标的在整个日期轴上的掩码（避免逐日重复解码）"""
+    d = decode_pack(open(os.path.join(ROOT, "docs", "data", code[2:] + ".bin"), "rb").read())
+    cl = _r2(d["close"]); op = _r2(d["open"]); hi = _r2(d["high"]); lo = _r2(d["low"])
+    raw = d["dates"].astype("i8"); n = cl.size
+    dif = _ema(cl, 12) - _ema(cl, 26); dea = _ema(dif, 9)
+    out = {}
+    for date in dates:
+        i = int(np.searchsorted(raw, date))
+        if i >= n or int(raw[i]) != date or i < FILTER_MIN_IDX:
+            out[date] = 0
+            continue
+        ph = float(hi[max(0, i - FILTER_PRIOR_N):i].max())
+        v = 0
+        t3 = i - 3
+        if (t3 - 5 >= 0 and cl[t3] > cl[t3 - 5] and hi[t3] > 0
+                and -0.10 <= cl[i] / hi[t3] - 1 <= -0.03
+                and cl[i - 1] < cl[i - 2] and cl[i] < cl[i - 2]):
+            v |= 1
+        if cl[i] > cl[i - 1] > cl[i - 2]:
+            v |= 2
+        bullish = cl[i] > op[i]
+        if bullish and cl[i] > max(hi[i - 1], hi[i - 2]):
+            v |= 4
+        if bullish and cl[i] > ph:
+            v |= 8
+        if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1] and dif[i] < 0:
+            v |= 16
+        body = abs(cl[i] - op[i])
+        big = cl[i - 1] > 0 and body / cl[i - 1] >= 0.06
+        hi20 = hi[i - 19:i + 1].max(); lo20 = lo[i - 19:i + 1].min()
+        span = hi20 - lo20
+        pos = (cl[i] - lo20) / span if span > 0 else 0.5
+        if big and bullish and pos <= 0.20:
+            v |= 32
+        if big and cl[i] < op[i] and pos >= 0.80:
+            v |= 64
+        out[date] = v
+    return out
+
+
+BITS = (1, 2, 4, 8, 16, 32, 64)
+
+
 def main(n=400):
+    """样本 = 随机若干 + **每个条件定向若干**。
+
+    必需这么抽：⑥(0.057%)、⑦(0.019%) 这种条件，纯随机采样几乎永远命中不了，
+    校验就等于没验 —— 而它们恰恰是最需要确认 Python/JS 口径一致的地方。
+    """
     idx = json.load(open(os.path.join(ROOT, "docs", "data", "index.json"), encoding="utf-8"))
     cal = [int(x) for x in tdx.trading_calendar(start=RANDOM_FROM, end=RANDOM_TO)]
     rng = random.Random(20260922)
-    cases = []
-    for _ in range(n):
-        s = rng.choice(idx["stocks"])
-        cases.append({"code": s[0], "date": rng.choice(cal), "mask": mask_of(s[0], rng.choice(cal))})
-    # 上面 mask_of 用的是一个随机日期，修正为与 date 一致
-    cases = []
-    for _ in range(n):
-        code = rng.choice(idx["stocks"])[0]
-        date = rng.choice(cal)
-        cases.append({"code": code, "date": date, "mask": mask_of(code, date)})
+    stocks = [s[0] for s in rng.sample(idx["stocks"], 150)]
+    cases, seen, per_bit = [], set(), {b: [] for b in BITS}
+    for code in stocks:
+        ms = masks_of(code, cal)
+        for date, m in ms.items():
+            key = (code, date)
+            if rng.random() < 0.015 and key not in seen:
+                seen.add(key); cases.append({"code": code, "date": date, "mask": m})
+            for b in BITS:
+                if (m & b) and len(per_bit[b]) < 25 and key not in seen:
+                    seen.add(key); per_bit[b].append({"code": code, "date": date, "mask": m})
+    for b in BITS:
+        cases.extend(per_bit[b])
+    from collections import Counter
+    hit = Counter()
+    for c in cases:
+        for b in BITS:
+            if c["mask"] & b:
+                hit[b] += 1
+    print(f"样本 {len(cases)} 个；各条件命中数：" +
+          " ".join(f"{b}:{hit[b]}" for b in BITS))
     tmp = "/tmp/_filter_cases.json"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cases, f)
-    from collections import Counter
-    c = Counter(bin(x["mask"]).count("1") for x in cases)
-    print(f"Python 侧样本 {len(cases)} 个，命中条件数分布：{dict(sorted(c.items()))}")
     return subprocess.run(["node", os.path.join(HERE, "dump_js_masks.mjs"), tmp], cwd=ROOT).returncode
 
 

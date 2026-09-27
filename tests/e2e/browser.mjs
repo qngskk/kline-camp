@@ -619,8 +619,8 @@ check(ddItems.length === 7, '筛选下拉应有 7 个条件，实际 ' + ddItems
 check(ddItems.some(t => /收盘价高于前 2 日最高价/.test(t)), '缺少③收盘破前2日高');
 check(ddItems.some(t => /收盘价突破/.test(t)), '缺少④收盘破前高');
 check(ddItems.some(t => /MACD 零下金叉/.test(t)), '缺少⑤MACD零下金叉');
-check(ddItems.some(t => /下影线/.test(t)), '缺少⑥底部反转');
-check(ddItems.some(t => /上影线/.test(t)), '缺少⑦顶部反转');
+check(ddItems.some(t => /大实体红柱/.test(t)), '缺少⑥底部大实体红柱');
+check(ddItems.some(t => /大实体绿柱/.test(t)), '缺少⑦顶部大实体绿柱');
 await page.click('body', { offset: { x: 5, y: 5 } }); await wait(200);
 check(await page.$eval('#filter-dd', el => el.classList.contains('hidden')), '点空白处应收起下拉');
 
@@ -639,18 +639,16 @@ const condAt = () => page.evaluate(() => {
            break2: c[i] > o[i] && c[i] > Math.max(h[i - 1], h[i - 2]),
            breakPrior: c[i] > o[i] && c[i] > ph,
            macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] && m.dif[i] < 0,
-           hammer: (Math.min(o[i], c[i]) - lo[i]) > 0 &&
-                   (Math.min(o[i], c[i]) - lo[i]) >= 2 * Math.abs(c[i] - o[i]) && pos <= 0.30,
-           shootingStar: (h[i] - Math.max(o[i], c[i])) > 0 &&
-                   (h[i] - Math.max(o[i], c[i])) >= 2 * Math.abs(c[i] - o[i]) && pos >= 0.70 };
+           bigRed: c[i] > o[i] && (Math.abs(c[i] - o[i]) / c[i - 1]) >= 0.06 && pos <= 0.20,
+           bigGreen: c[i] < o[i] && (Math.abs(c[i] - o[i]) / c[i - 1]) >= 0.06 && pos >= 0.80 };
 });
 
 for (const [label, bits, key] of [
   ['③收盘破前2日高', [4], 'break2'],
   ['⑤MACD零下金叉', [16], 'macdCross'],
   ['④收盘破前高', [8], 'breakPrior'],
-  ['⑥底部反转(锤子)', [32], 'hammer'],
-  ['⑦顶部反转(射击之星)', [64], 'shootingStar'],
+  ['⑥底部大实体红柱', [32], 'bigRed'],
+  ['⑦顶部大实体绿柱', [64], 'bigGreen'],
 ]) {
   await setFilter(bits);
   const before = await page.evaluate(() => window.__kline.session.switches.length);
@@ -670,7 +668,7 @@ const c5 = await condAt();
 console.log(`   七条全选 → ${a5 > b5 ? '换到 ' + c5.code : '该日期无匹配（正常）'}`);
 if (a5 > b5) {
   check(c5.pullback && c5.up2 && c5.break2 && c5.breakPrior && c5.macdCross &&
-        c5.hammer && c5.shootingStar, '七条全选时必须全部满足');
+        c5.bigRed && c5.bigGreen, '七条全选时必须全部满足');
 }
 await shot('15-filter5');
 

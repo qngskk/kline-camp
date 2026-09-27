@@ -199,8 +199,8 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
       4  当日收阳，且开盘价高于前 2 日最高价
       8  当日收阳，且开盘价高于「前期高点」
       16 MACD 零下金叉（DIF 上穿 DEA 且 DIF < 0）
-      32 底部反转：下影线 ≥ 实体2倍 且 收盘在近20日区间下30%
-      64 顶部反转：上影线 ≥ 实体2倍 且 收盘在近20日区间上30%
+      32 底部大实体红柱：收阳 且 实体 ≥ 前收盘6% 且 收盘在近20日区间下20%
+      64 顶部大实体绿柱：收阴 且 实体 ≥ 前收盘6% 且 收盘在近20日区间上20%
     """
     nd = len(axis["dates"])
     m = np.zeros(nd, dtype=np.uint8)
@@ -265,16 +265,15 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
             v |= 8
         if dif[i] > dea[i] and dif[i - 1] <= dea[i - 1] and dif[i] < 0:
             v |= 16
-        # ⑥⑦ 裸K反转（与 sim.js 同口径）
+        # ⑥⑦ 裸K反转（与 sim.js 同口径）：底部大实体红柱 / 顶部大实体绿柱
         body = abs(cl[i] - op[i])
-        lower = min(op[i], cl[i]) - lw[i]
-        upper = hi[i] - max(op[i], cl[i])
+        big = cl[i - 1] > 0 and body / cl[i - 1] >= 0.06
         hi20 = hi[i - 19:i + 1].max(); lo20 = lw[i - 19:i + 1].min()
         span = hi20 - lo20
         pos = (cl[i] - lo20) / span if span > 0 else 0.5
-        if lower > 0 and lower >= 2 * body and pos <= 0.30:
+        if big and cl[i] > op[i] and pos <= 0.20:
             v |= 32
-        if upper > 0 and upper >= 2 * body and pos >= 0.70:
+        if big and cl[i] < op[i] and pos >= 0.80:
             v |= 64
         m[k] = v
     return m
@@ -283,22 +282,26 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
 def build_filter(stocks, out_dir: str):
     """生成 docs/data/filter.bin —— 「换股筛选」的倒排索引。
 
-    只给通过率 < 5% 的两个条件建倒排表（实测）：
-        ④ 收盘破前高    4.9%
-        ⑤ MACD 零下金叉  2.4%
-    其余（②23% / ③16% / ①8.8% / ⑥6.8% / ⑦5.5%）盲抽十几只就能命中，建表反而占空间。
+    给通过率低到盲抽不可能命中的条件建倒排表（实测）：
+        ④ 收盘破前高      4.9%
+        ⑤ MACD 零下金叉    2.4%
+        ⑥ 底部大实体红柱  0.057%   ← 全市场平均每天约 2.8 只
+        ⑦ 顶部大实体绿柱  0.019%   ← 全市场平均每天不到 1 只
+    其余（②23% / ③16% / ①8.8%）盲抽十几只就能命中，建表反而占空间。
     这样任意组合（含"全选"）都能一次锁定候选，不必盲抽。
 
     格式（全部小端）：
-        'KLF4' | u32 nd | u32 n8 | u32 n16
-              | u32 dates[nd] | u32 off8[nd+1] | u32 off16[nd+1]
-              | u16 idx8[n8]  | u16 idx16[n16]
+        'KLF5' | u32 nd | u32 k | u32 bits[k] | u32 n[k]
+              | u32 dates[nd]
+              | (u32 off[nd+1]) × k     每张表的「每日起始下标」
+              | (u16 idx[n])    × k     每张表拼在一起的列号
+    k 张表的位在 bits 里声明，前端直接按文件里的位列表查 —— 以后加条件不用改格式。
     """
     cal = tdx.trading_calendar(start=RANDOM_FROM, end=RANDOM_TO)
     dates = [int(d) for d in cal]
     axis = {"dates": dates, "lo": RANDOM_FROM, "hi": RANDOM_TO}
     nd = len(dates)
-    BITS = (8, 16)
+    BITS = (8, 16, 32, 64)
     lists = {b: [[] for _ in range(nd)] for b in BITS}
     t0 = time.time()
     for r, code in enumerate(stocks):
@@ -317,8 +320,10 @@ def build_filter(stocks, out_dir: str):
         flat[b], offs[b] = arr, off
 
     buf = io.BytesIO()
-    buf.write(b"KLF4")
-    buf.write(np.array([nd] + [len(flat[b]) for b in BITS], "<u4").tobytes())
+    buf.write(b"KLF5")
+    buf.write(np.array([nd, len(BITS)], "<u4").tobytes())
+    buf.write(np.array(BITS, "<u4").tobytes())
+    buf.write(np.array([len(flat[b]) for b in BITS], "<u4").tobytes())
     buf.write(np.array(dates, "<u4").tobytes())
     for b in BITS:
         buf.write(np.array(offs[b], "<u4").tobytes())

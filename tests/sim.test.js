@@ -698,54 +698,44 @@ test('filterDetail：五个条件逐条判定（用户指定的规则）', () =>
     b.open[71] = 10.3; b.close[71] = 10.1;
     assert.equal(filterDetail(b, 71).breakPrior, false, '绿柱不算突破');
   }
-  // ⑥ 底部反转（锤子）：下影线 ≥ 实体 2 倍 + 收盘在近 20 日区间下 30%
+  // ⑥ 底部大实体红柱：收阳 + 实体 ≥ 前收盘 6% + 收盘在近 20 日区间下 20%
+  //    注意：近 20 日区间**包含当日**，大实体自己会把区间撑开，所以样本要留够宽度
   {
-    // 前 71 根在高位（11.4~12.0），最后一根跌到 9.0~9.7 留长下影 → 低位 + 长下影
-    const b = mk(i => (i < 71 ? { o: 11.5, h: 12.0, l: 11.4, c: 11.6 }
-                              : { o: 9.55, h: 9.7, l: 9.0, c: 9.6 }));
+    // 前 71 根在 11.4~13.0，最后一根跌到 8.9~9.8 拉出大阳线：实体 0.7 = 前收 11.6 的 6.0%
+    const b = mk(i => (i < 71 ? { o: 12.0, h: 13.0, l: 11.4, c: 11.6 }
+                              : { o: 9.0, h: 9.8, l: 8.9, c: 9.7 }));
     const d = filterDetail(b, 71);
-    assert.equal(d.lower > 2 * d.body, true);
-    assert.equal(d.pos <= 0.30, true, `区间位置 ${(d.pos * 100).toFixed(0)}%`);
-    assert.equal(d.hammer, true, '长下影 + 低位应为底部反转');
-    assert.equal(d.shootingStar, false, '不可能是射击之星');
-    // 上影线长 → 是射击之星不是锤子
-    const b2 = mk(i => (i < 71 ? { o: 5.0, h: 5.1, l: 4.9, c: 5.0 }
-                               : { o: 10.45, h: 11.0, l: 10.4, c: 10.5 }));   // 长上影 + 高位
-    const d2 = filterDetail(b2, 71);
-    assert.equal(d2.shootingStar, true);
-    assert.equal(d2.hammer, false);
-    // 位置够低但下影线不够长（实体 0.5、下影仅 0.1）→ 不算
-    const b3 = mk(i => (i < 71 ? { o: 11.5, h: 12.0, l: 11.4, c: 11.6 }
-                              : { o: 9.1, h: 9.7, l: 9.0, c: 9.6 }));
+    assert.equal(d.bigBody, true, `实体 ${(d.body / b.close[70] * 100).toFixed(1)}% 应 ≥ 6%`);
+    assert.equal(d.pos <= 0.20, true, `区间位置 ${(d.pos * 100).toFixed(1)}% 应 ≤ 20%`);
+    assert.equal(d.bigRed, true, '底部大实体红柱');
+    assert.equal(d.bigGreen, false, '红柱不可能是绿柱');
+    // 实体不够大（0.3 / 11.6 = 2.6%）
+    const b2 = mk(i => (i < 71 ? { o: 12.0, h: 13.0, l: 11.4, c: 11.6 }
+                               : { o: 9.2, h: 9.6, l: 9.1, c: 9.5 }));
+    assert.equal(filterDetail(b2, 71).bigRed, false, '实体仅 2.6%，不足 6%');
+    // 实体够大但位置不在底部
+    const b3 = mk(i => (i < 71 ? { o: 9.0, h: 9.2, l: 8.9, c: 9.0 }
+                               : { o: 10.0, h: 10.9, l: 9.9, c: 10.7 }));
     const d3 = filterDetail(b3, 71);
-    assert.equal(d3.pos <= 0.30, true, '位置是够低的');
-    assert.equal(d3.hammer, false, `下影线 ${d3.lower.toFixed(2)} < 实体 ${d3.body.toFixed(2)} 的 2 倍`);
+    assert.ok(d3.pos > 0.5, `位置 ${(d3.pos * 100).toFixed(0)}% 不在底部`);
+    assert.equal(d3.bigRed, false, '位置不在近 20 日下 20% 就不算');
   }
-  // ⑦ 顶部反转（射击之星）：上影线 ≥ 实体 2 倍 + 收盘在近 20 日区间上 30%
+  // ⑦ 顶部大实体绿柱：收阴 + 实体 ≥ 前收盘 6% + 收盘在近 20 日区间上 20%
   {
-    const b = mk(i => (i < 71 ? { o: 9.0, h: 9.1, l: 8.9, c: 9.0 }
-                              : { o: 10.45, h: 11.0, l: 10.4, c: 10.5 }));
+    const b = mk(i => (i < 71 ? { o: 8.0, h: 9.1, l: 6.8, c: 9.0 }
+                              : { o: 10.9, h: 11.0, l: 10.1, c: 10.2 }));   // 实体 0.7 = 9.0 的 7.8%
     const d = filterDetail(b, 71);
-    assert.equal(d.upper > 2 * d.body, true);
-    assert.equal(d.pos >= 0.70, true, `区间位置 ${(d.pos * 100).toFixed(0)}%`);
-    assert.equal(d.shootingStar, true);
-    // 位置不对（低位）就不算
-    const b2 = mk(i => ({ o: 10.0, h: 11.0, l: 9.9, c: 10.05 }));
-    assert.equal(filterDetail(b2, 71).shootingStar, false, '低位长上影不算顶部反转');
-  }
-  // ① 与 ② 不可能同时成立（① 要 cl[T] < cl[T-2]，② 要 cl[T] > cl[T-2]）——
-  // 用户只用单个条件，所以不做互斥检测，这里只把这条性质记下来
-  {
-    const b = mk(i => {
-      if (i <= 63) return { o: 9.0, h: 9.2, l: 8.9, c: 9.0 };
-      if (i <= 68) return { o: 9.5, h: 10.5, l: 9.4, c: 10.0 };
-      if (i === 69) return { o: 10.0, h: 10.1, l: 9.8, c: 9.9 };
-      if (i === 70) return { o: 9.7, h: 9.9, l: 9.5, c: 9.6 };
-      return { o: 9.6, h: 9.8, l: 9.5, c: 9.7 };
-    });
-    const d = filterDetail(b, 71);
-    assert.equal(d.pullback, true);
-    assert.equal(d.up2, false, '满足①就不可能同时满足②');
+    assert.equal(d.bigBody, true, `实体 ${(d.body / b.close[70] * 100).toFixed(1)}% 应 ≥ 6%`);
+    assert.equal(d.pos >= 0.80, true, `区间位置 ${(d.pos * 100).toFixed(1)}% 应 ≥ 80%`);
+    assert.equal(d.bigGreen, true, '顶部大实体绿柱');
+    assert.equal(d.bigRed, false, '绿柱不可能是红柱');
+    // 大实体但位置在低位 → 不算顶部反转
+    const b2 = mk(i => (i < 71 ? { o: 10.5, h: 10.6, l: 10.4, c: 10.5 }
+                               : { o: 10.0, h: 10.1, l: 9.2, c: 9.3 }));
+    const d2 = filterDetail(b2, 71);
+    assert.equal(d2.bigBody, true, '实体 6.7% 够大');
+    assert.ok(d2.pos < 0.5, `位置 ${(d2.pos * 100).toFixed(0)}% 不在顶部`);
+    assert.equal(d2.bigGreen, false, '位置不在近 20 日上 20% 就不算');
   }
   // ⑤ MACD「零下」金叉
   {

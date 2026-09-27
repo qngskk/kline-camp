@@ -128,7 +128,7 @@ function barsMacd(bars) {
 function maskAt(bars, i) { return filterDetail(bars, i, barsMacd(bars)).mask; }
 
 /** 筛选倒排索引 filter.bin：给三个稀有条件（③阳线实体超前2日高 / ④阳线实体破前高 / ⑤MACD零下金叉）建表 */
-const FILTER_RARE_BITS = [8, 16];   // 只给通过率 < 5% 的两个条件建了倒排表
+const FILTER_RARE_BITS = [8, 16, 32, 64];   // 兜底用；实际以 filter.bin 里声明的位列表为准
 async function loadFilterIndex() {
   if (state.findex || state.findexFailed) return state.findex;
   try {
@@ -137,25 +137,31 @@ async function loadFilterIndex() {
     const buf = await res.arrayBuffer();
     const dv = new DataView(buf);
     const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-    if (magic !== 'KLF4') throw new Error('bad magic');
-    const nd = dv.getUint32(4, true);
-    const n = { 8: dv.getUint32(8, true), 16: dv.getUint32(12, true) };
-    let off = 16;
+    if (magic !== 'KLF5') throw new Error('bad magic');
+    const nd = dv.getUint32(4, true), k = dv.getUint32(8, true);
+    let off = 12;
+    const bits = [];
+    for (let i = 0; i < k; i++) bits.push(dv.getUint32(off + i * 4, true));
+    off += k * 4;
+    const count = {};
+    bits.forEach((b, i) => { count[b] = dv.getUint32(off + i * 4, true); });
+    off += k * 4;
     const dates = new Int32Array(nd);
     for (let i = 0; i < nd; i++) dates[i] = dv.getUint32(off + i * 4, true);
     off += nd * 4;
     const offs = {};
-    for (const b of FILTER_RARE_BITS) {
+    for (const b of bits) {
       const a = new Uint32Array(nd + 1);
       for (let i = 0; i <= nd; i++) a[i] = dv.getUint32(off + i * 4, true);
       off += (nd + 1) * 4;
       offs[b] = a;
     }
     const idx = {};
-    for (const b of FILTER_RARE_BITS) { idx[b] = new Uint16Array(buf, off, n[b]); off += n[b] * 2; }
+    for (const b of bits) { idx[b] = new Uint16Array(buf, off, count[b]); off += count[b] * 2; }
     const col = new Map();
     for (let i = 0; i < nd; i++) col.set(dates[i], i);
-    state.findex = { nd, dates, offs, idx, col, count: n };
+    // 位列表来自文件本身，前端不再硬编码 —— 以后加条件只改构建脚本
+    state.findex = { nd, dates, offs, idx, col, count, bits };
   } catch (e) {
     state.findexFailed = true;                   // 拿不到就退回盲抽，不影响使用
   }
@@ -475,11 +481,11 @@ async function rollStockOnDate(date, endDate, excludeCode, avoidCodes) {
 
   let pool = null;                                  // 倒排表给出的候选只数（用于失败提示）
   // 路线 A：勾了稀有条件 → 用倒排表锁定候选（取最稀有的一张做起点，其余求交）
-  const rareSel = FILTER_RARE_BITS.filter(b => want & b);
-  if (rareSel.length) {
+  if (want) {
     const fi = await loadFilterIndex();
     const col = fi && fi.col.get(date);
-    if (fi && col !== undefined) {
+    const rareSel = fi ? fi.bits.filter(b => want & b) : [];
+    if (fi && col !== undefined && rareSel.length) {
       rareSel.sort((a, b) => fi.count[a] - fi.count[b]);
       let rows = Array.from(postingRows(fi, rareSel[0], col));
       for (const b of rareSel.slice(1)) {

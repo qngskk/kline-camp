@@ -569,10 +569,10 @@ export const FILTER_DEFS = [
     label: '当日收阳，且收盘价高于「前期高点」（近 20 根最高价）' },
   { bit: 16, key: 'macdCross', short: 'MACD零下金叉',
     label: 'MACD 在零轴下方金叉（DIF 上穿 DEA 且 DIF < 0）' },
-  { bit: 32, key: 'hammer', short: '底部反转(锤子)',
-    label: '下影线 ≥ 实体 2 倍，且收盘处于近 20 日区间的下 30%' },
-  { bit: 64, key: 'shootingStar', short: '顶部反转(射击之星)',
-    label: '上影线 ≥ 实体 2 倍，且收盘处于近 20 日区间的上 30%' },
+  { bit: 32, key: 'bigRed', short: '底部大实体红柱',
+    label: '红柱（收阳）且实体 ≥ 前收盘 6%，且收盘处于近 20 日区间的下 20%' },
+  { bit: 64, key: 'bigGreen', short: '顶部大实体绿柱',
+    label: '绿柱（收阴）且实体 ≥ 前收盘 6%，且收盘处于近 20 日区间的上 20%' },
 ];
 export const FILTER_ALL = FILTER_DEFS.reduce((a, d) => a | d.bit, 0);
 /** 「前期高点」的回看根数（不含当日）。20 根≈一个月：够近，能反映"最近的高点"，
@@ -622,23 +622,22 @@ export function filterDetail(bars, i, macdRes, opt = {}) {
   let macdCross = null;                                     // ⑤ 零下金叉
   if (macdRes) macdCross = macdRes.dif[i] > macdRes.dea[i] &&
                            macdRes.dif[i - 1] <= macdRes.dea[i - 1] && macdRes.dif[i] < 0;
-  // ⑥⑦ 裸K反转（资料第三种：十字星 + 较大实体反向 K 线；配图是长下影的锤子线）
+  // ⑥⑦ 裸K反转（资料第三种「一根较大实体反向 K 线」）：
+  //   ⑥ 底部大实体红柱 / ⑦ 顶部大实体绿柱 —— 实体 ≥ 前收盘 6%，位置在近 20 日区间下/上 20%
   const body = Math.abs(c[i] - o[i]);
-  const lower = Math.min(o[i], c[i]) - l[i];                // 下影线
-  const upper = h[i] - Math.max(o[i], c[i]);                // 上影线
+  const bigBody = i > 0 && c[i - 1] > 0 && body / c[i - 1] >= 0.06;
   let hi20 = -Infinity, lo20 = Infinity;
   for (let k = i - 19; k <= i; k++) { if (h[k] > hi20) hi20 = h[k]; if (l[k] < lo20) lo20 = l[k]; }
   const span20 = hi20 - lo20;
   const pos = span20 > 0 ? (c[i] - lo20) / span20 : 0.5;    // 收盘在近 20 日区间的位置
-  // 影线 > 0 是排除一字板/无波动 K 线（实测只影响 0.06pp）
-  const hammer = lower > 0 && lower >= 2 * body && pos <= 0.30;
-  const shootingStar = upper > 0 && upper >= 2 * body && pos >= 0.70;
+  const bigRed = c[i] > o[i] && bigBody && pos <= 0.20;     // ⑥ 底部大实体红柱
+  const bigGreen = c[i] < o[i] && bigBody && pos >= 0.80;   // ⑦ 顶部大实体绿柱
   const mask = (pullback ? 1 : 0) | (up2 ? 2 : 0) | (break2 ? 4 : 0) |
                (breakPrior ? 8 : 0) | (macdCross ? 16 : 0) |
-               (hammer ? 32 : 0) | (shootingStar ? 64 : 0);
+               (bigRed ? 32 : 0) | (bigGreen ? 64 : 0);
   return { ready: true, mask, dd, priorIdx: pj, priorHigh: ph, bullish,
            trendUp, inRange, down2, pullback, up2, break2, breakPrior, macdCross,
-           body, lower, upper, pos, hammer, shootingStar };
+           body, bigBody, pos, bigRed, bigGreen };
 }
 
 /** mask 是否覆盖选中的全部条件 */
