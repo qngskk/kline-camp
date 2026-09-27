@@ -185,6 +185,13 @@ export class Session {
   get outOfData() { return !this.finished && this.day < this.horizon && this.cur >= this.lastIdx; }
   /** 能否换股：未持股，且「还能操作」或「当前标的已走完」（后者是唯一逃出死局的出口） */
   get canSwitch() { return !this.finished && this.shares === 0 && (this.canAct || this.outOfData); }
+  /** 停牌：本局结束日之前就断了，但**后面还有 K 线**（只是跨过了结束日）→ 可以跳到复牌日。
+   *  与"数据到此为止（退市）"区分开：后者 cur 已经是最后一根，没有可跳的目标。 */
+  get suspension() {
+    if (!this.outOfData || this.cur + 1 > this.bars.n - 1) return null;
+    const from = this.bars.dates[this.cur], resume = this.bars.dates[this.cur + 1];
+    return { idx: this.cur + 1, from, resume, gapDays: calendarGap(from, resume) };
+  }
   get nextDate() { return this.cur < this.lastIdx ? this.bars.dates[this.cur + 1] : null; }
   get progress() { return this.day / this.horizon; }
   get daysLeft() { return Math.max(0, this.horizon - this.day); }
@@ -418,6 +425,20 @@ export class Session {
 
   /** 空仓换股：把本局切到另一只标的，账目与已用交易日不变，结束交易日也不变。
    *  只有空仓时允许（有持仓换股等于凭空换标的，不合理）。 */
+  /** 跳到复牌日继续：把剩下没走完的交易日重新排到复牌之后 */
+  jumpToResume() {
+    const sp = this.suspension;
+    if (!sp) return { ok: false, msg: '当前没有可跳转的复牌日' };
+    const left = this.horizon - this.day;
+    this.cur = sp.idx;
+    this.lastIdx = Math.min(sp.idx + left, this.bars.n - 1);
+    this.endDate = this.bars.dates[this.lastIdx];
+    this.pending = [];          // 停牌前的委托按"当日有效"处理，作废
+    this.boughtToday = 0;
+    this.marks = [];
+    return { ok: true, ...sp, left };
+  }
+
   switchStock({ bars, stock, curIdx }) {
     // 新标的必须覆盖到本局结束日，否则换过去就再也推不动了
     if (bars.dates[bars.n - 1] < this.endDate) {

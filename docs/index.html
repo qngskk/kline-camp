@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>重生之K线股王 · K线训练营</title>
 <meta name="description" content="使用真实历史行情（前复权）逐日推演的 K 线交易训练营：随机股票 + 随机日期，次日开盘价成交，实时记录盈亏。">
-<link rel="stylesheet" href="css/app.css?v=20260922q">
+<link rel="stylesheet" href="css/app.css?v=20260922r">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230f172a'/%3E%3Crect x='14' y='20' width='8' height='26' fill='%23ef4444'/%3E%3Crect x='28' y='14' width='8' height='34' fill='%2322c55e'/%3E%3Crect x='42' y='24' width='8' height='24' fill='%23ef4444'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -125,6 +125,13 @@
         <div class="dd-hint">「前期高点」= 近 <b>20</b> 根 K 线（不含当日）里的最高价，≈一个月（④ 用）</div>
         <div class="dd-hint">①＝T-3 高于 5 天前 <b>且</b> 收盘相对 <b>T-3 最高价</b>低 3%~10% <b>且</b> T-1、T 都收在 T-2 下方</div>
         <div class="dd-foot">抽不到就是当天全市场没有同时满足的票，<b>不会自动放宽</b>。</div>
+      </div>
+      <div class="susp hidden" id="susp-box">
+        <div class="susp-txt" id="susp-txt"></div>
+        <div class="btn-row">
+          <button class="act" id="btn-jump">跳到复牌日继续</button>
+          <button class="mini" id="btn-settle-now">直接结算</button>
+        </div>
       </div>
       <div class="btn-row">
         <button class="act end" id="btn-end">结束交易并结算</button>
@@ -288,6 +295,6 @@
   </div>
 </div>
 
-<script type="module" src="js/app.js?v=20260922q"></script>
+<script type="module" src="js/app.js?v=20260922r"></script>
 </body>
 </html>

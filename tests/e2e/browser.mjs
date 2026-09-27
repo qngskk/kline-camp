@@ -188,8 +188,15 @@ const cyanPixels = () => page.evaluate(() => {
   return n;
 });
 const cyan0 = await cyanPixels();
+// 自定均线输入框在下拉里；没展开才点（否则会把已展开的收起）
+if (await page.$eval('#ma-dd', el => el.classList.contains('hidden'))) {
+  await page.click('#btn-ma'); await wait(250);
+}
+check(!(await page.$eval('#ma-dd', el => el.classList.contains('hidden'))), '均线下拉应已展开');
+// 均线天数不能超过「当前 bar 之前已有的 K 线数」，否则这条线在当前 bar 上算不出来（正常）
+const period = await page.evaluate(() => Math.max(30, Math.min(120, window.__kline.session.cur + 1)));
 await page.click('#ma-custom');
-await page.type('#ma-custom', '120');
+await page.type('#ma-custom', String(period));
 await page.keyboard.press('Enter');
 await wait(400);
 const cust = await page.evaluate(() => {
@@ -197,11 +204,11 @@ const cust = await page.evaluate(() => {
   return { period: c.maCustom, val: c.maCustomArr ? c.maCustomArr[i] : null,
            legend: document.getElementById('leg-custom').classList.contains('hidden') ? '' :
                    document.getElementById('leg-custom-n').textContent,
-           input: document.getElementById('ma-custom').value };
+           input: document.getElementById('ma-custom').value, cur: i };
 });
 console.log('   自定义均线:', JSON.stringify(cust), ' 青色像素', cyan0, '→', await cyanPixels());
-check(cust.period === 120 && cust.val !== null, '输入 120 后应算出 120 日均线');
-check(cust.legend === '120', '图例应显示 MA120');
+check(cust.period === period && Number.isFinite(cust.val), `输入 ${period} 后应算出该均线`);
+check(cust.legend === String(period), '图例应显示对应天数');
 check((await cyanPixels()) > cyan0 + 500, '应画出这条均线');
 check(cust.val > 0 && cust.val < 1e4, '均线值应在合理区间');
 // 关掉全部内置均线，自定义那条要还在
@@ -722,7 +729,14 @@ console.log('   状态:', JSON.stringify({ day: stuck.day, horizon: stuck.horizo
 check(stuck.canAct === false && stuck.outOfData === true, '应进入「行情走完」状态');
 check(stuck.nextDisabled === true, '进入下一日应禁用');
 check(stuck.switchDisabled === false, '换一只股票必须仍可用，否则进度停在 N/90 就死局了');
-check(/行情在本局结束日/.test(stuck.hint), '应给出明确原因，而不是默默变灰');
+const stuckMsg = await page.evaluate(() => {
+  const box = document.getElementById('susp-box');
+  return box.classList.contains('hidden')
+    ? document.getElementById('act-hint').innerText.replace(/\s+/g, ' ')
+    : document.getElementById('susp-txt').innerText.replace(/\s+/g, ' ');
+});
+check(/结束日/.test(stuckMsg) && /(停牌|退市|数据断档)/.test(stuckMsg),
+      '应给出明确原因（停牌/退市/数据断档），而不是默默变灰');
 const before9e = await page.evaluate(() => window.__kline.session.switches.length);
 await page.click('#btn-switch'); await wait(1200);
 const after9e = await page.evaluate(() => ({
@@ -733,6 +747,53 @@ const after9e = await page.evaluate(() => ({
 console.log('   换股后:', JSON.stringify(after9e));
 check(after9e.n > before9e, '卡死状态下必须能换股逃出');
 check(after9e.canAct === true && after9e.outOfData === false, '换股后应恢复正常推进');
+// 停牌：行情跨过本局结束日 → 提示框 + 「跳到复牌日」，以及换股禁用原因
+const suspUI = await page.evaluate(() => {
+  const s = window.__kline.session;
+  s.shares = 0; s.costTotal = 0; s.cash = s.capital;
+  s.lastIdx = s.cur;                                  // 模拟：下一根 K 线已越过本局结束日
+  window.__kline.renderAll();
+  return {
+    hasSusp: !!s.suspension, suspIdx: s.suspension ? s.suspension.idx : -1,
+    boxHidden: document.getElementById('susp-box').classList.contains('hidden'),
+    txt: document.getElementById('susp-txt').innerText.replace(/\s+/g, ' '),
+    nextDisabled: document.getElementById('btn-next').disabled,
+    switchDisabled: document.getElementById('btn-switch').disabled,
+  };
+});
+console.log('   停牌提示:', suspUI.boxHidden ? '（未显示）' : '已显示',
+            ' next 禁用=' + suspUI.nextDisabled, ' 换股禁用=' + suspUI.switchDisabled);
+check(suspUI.hasSusp && !suspUI.boxHidden, '停牌时应显示提示框');
+check(/停牌|复牌/.test(suspUI.txt), '提示框应说明停牌与复牌日');
+check(suspUI.nextDisabled === true, '停牌时「进入下一日」应禁用');
+check(suspUI.switchDisabled === false, '停牌但空仓时「换一只股票」应可用');
+const beforeJump = await page.evaluate(() => ({ cur: window.__kline.session.cur, date: window.__kline.session.date }));
+await page.click('#btn-jump'); await wait(700);
+const afterJump = await page.evaluate(() => {
+  const s = window.__kline.session;
+  return { cur: s.cur, date: s.date, outOfData: s.outOfData, canAct: s.canAct,
+           boxHidden: document.getElementById('susp-box').classList.contains('hidden'),
+           endDate: s.endDate, left: s.horizon - s.day };
+});
+console.log('   跳到复牌日:', beforeJump.date, '→', afterJump.date, ' 剩余', afterJump.left, '天');
+check(afterJump.cur > beforeJump.cur, '应前进到复牌那一根');
+check(afterJump.outOfData === false && afterJump.canAct === true, '跳转后应能继续推进');
+check(afterJump.boxHidden === true, '跳转后提示框应收起');
+// 有持仓时换股禁用，且要说清楚原因
+const heldUI = await page.evaluate(() => {
+  const s = window.__kline.session;
+  s.shares = 1000; s.costTotal = 10000;
+  s.lastIdx = s.cur;                                  // 再制造一次停牌
+  window.__kline.renderAll();
+  const sw = document.getElementById('btn-switch');
+  return { disabled: sw.disabled, title: sw.title, txt: document.getElementById('susp-txt').innerText.replace(/\s+/g, ' ') };
+});
+console.log('   有持仓时换股:', heldUI.disabled ? '禁用' : '可用', ' 提示=', heldUI.title.slice(0, 30));
+check(heldUI.disabled === true, '有持仓时换股应禁用');
+check(/持仓/.test(heldUI.title), '按钮 tooltip 应说明是因为有持仓');
+check(/不能换股/.test(heldUI.txt), '提示框应说明有持仓不能换股');
+await page.evaluate(() => { const s = window.__kline.session; s.shares = 0; s.costTotal = 0; s.lastIdx = s.bars.n - 1; window.__kline.renderAll(); });
+
 const dump = await page.evaluate(() => window.__kline.report());
 check(/"outOfData"/.test(dump) && /"lastBarDate"/.test(dump), '诊断信息应包含 outOfData / lastBarDate');
 console.log('   诊断导出字段:', Object.keys(JSON.parse(dump)).join(', '));

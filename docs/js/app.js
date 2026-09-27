@@ -334,6 +334,9 @@ function renderAll(fit = false) {
   $('btn-next').disabled = !canAct;
   $('btn-end').disabled = s.finished;
   $('btn-switch').disabled = !s.canSwitch;
+  $('btn-switch').title = s.canSwitch ? '换一只股票（本局日期不变）'
+    : s.shares > 0 ? `有持仓 ${s.shares} 股时不能换股（换股等于凭空换标的）；先清仓或结束交易`
+    : '本轮已结束';
 
   const pend = $('pending-box');
   if (s.pending.length) {
@@ -361,13 +364,29 @@ function renderAll(fit = false) {
       .join(' · ');
   }
 
+  // 停牌：行情提前断了，但后面还有 K 线 → 问用户要不要跳到复牌日
+  const susp = s.suspension;
+  $('susp-box').classList.toggle('hidden', !susp);
+  if (susp) {
+    $('susp-txt').innerHTML =
+      `⚠️ <b>${fmtDate(susp.from)}</b> 之后本标的没有行情了（停牌），下一根 K 线是 ` +
+      `<b>${fmtDate(susp.resume)}</b>（复牌日，间隔 ${susp.gapDays} 天），已经越过本局结束日 ` +
+      `<b>${fmtDate(s.endDate)}</b>。<br>进度停在 <b>${s.day}/${s.horizon}</b> 天。` +
+      (s.shares > 0 ? `你有持仓，<b>不能换股</b>；` : `也可以先 <b>换一只股票</b>；`) +
+      `跳过去会把剩下 <b>${s.horizon - s.day}</b> 个交易日重新排在复牌之后。`;
+  }
+
   $('act-hint').innerHTML = s.finished
     ? '本轮已结束。'
     : s.outOfData
-      ? `<span class="down">⚠️ 当前标的的行情在本局结束日（<b>${fmtDate(s.endDate)}</b>）之前就用完了` +
-        `（停牌 / 退市 / 数据断档），没法再「进入下一日」。</span><br>` +
-        `进度停在 <b>${s.day}/${s.horizon}</b> 天。可以点 <b>换一只股票</b> 换个标的继续，` +
-        `或点 <b>结束交易并结算</b> 直接结算。`
+      ? susp
+        ? ``   // 停牌的情况上面那个框已经说清楚了
+        : `<span class="down">⚠️ 当前标的的行情在本局结束日（<b>${fmtDate(s.endDate)}</b>）之前就用完了` +
+          `（退市 / 数据断档，后面再没有 K 线），没法再「进入下一日」。</span><br>` +
+          `进度停在 <b>${s.day}/${s.horizon}</b> 天。` +
+          (s.shares > 0 ? `你有持仓 <b>${s.shares}</b> 股，<b>换股会被拒绝</b>（换股等于凭空换标的），` +
+                          `所以这里只能 <b>结束交易并结算</b>。`
+                        : `可以点 <b>换一只股票</b> 换个标的继续，或点 <b>结束交易并结算</b> 直接结算。`)
       : s.pending.length
       ? `已挂 <b>${s.pending.length}</b> 笔委托：点「进入下一日」时<b>按输入顺序</b>一次成交；` +
         `成交前都可以点标签上的 × 撤销。`
@@ -894,7 +913,15 @@ function bind() {
     const v = state.chart.setCustomMA(input.value);
     input.value = v || '';
     syncMAUI();
-    toast(v ? `已显示 MA${v}` : '已关闭自定义均线', 'info', 1400);
+    // 当前 bar 上还凑不够 N 根 K 线的话，这条线在这个位置是画不出来的，得说明白
+    const have = state.session ? state.session.cur + 1 : 0;
+    const short = v > have;
+    toast(v
+      ? short
+        ? `${v} 日均线需要 ${v} 根 K 线，当前 bar 只有 <b>${have}</b> 根 —— ` +
+          `这条线要等到第 ${v} 根之后才画得出来（展开图表往右看会逐渐出现）`
+        : `已显示 MA${v}`
+      : '已关闭自定义均线', short ? 'warn' : 'info', short ? 4600 : 1400);
   }
   $('ma-custom').addEventListener('change', e => applyCustom(e.target));
   $('ma-custom').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
@@ -911,6 +938,14 @@ function bind() {
     if (!maDd.contains(e.target) && !e.target.closest('#btn-ma')) maDd.classList.add('hidden');
   });
   syncMAUI();
+  $('btn-jump').addEventListener('click', () => {
+    const r = state.session.jumpToResume();
+    if (!r.ok) { toast(r.msg, 'warn', 2400); return; }
+    renderAll(false);
+    toast(`已跳到复牌日 <b>${fmtDate(r.resume)}</b>，剩下 <b>${r.left}</b> 个交易日重新开始`,
+          'ok', 3200);
+  });
+  $('btn-settle-now').addEventListener('click', () => $('btn-end').click());
   $('btn-macd').addEventListener('click', () => {
     const on = !state.chart.showMACD;
     state.chart.setShowMACD(on);

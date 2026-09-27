@@ -363,3 +363,12 @@ input[type=text]:focus, input[type=number]:focus { border-color: var(--accent); 
   padding: 6px 0 2px; margin-top: 4px; border-top: 1px dashed var(--line);
 }
 .dd-ma-custom .mini.num { width: 62px; margin-left: auto; }
+
+/* 停牌提示：行情在本局结束日之前断了 */
+.susp {
+  border: 1px solid rgba(251,191,36,.45); background: rgba(251,191,36,.10);
+  border-radius: 9px; padding: 9px 10px; margin: 7px 0;
+}
+.susp-txt { font-size: 11px; color: #fde68a; line-height: 1.6; margin-bottom: 8px; }
+.susp-txt b { color: #fff; }
+.susp .btn-row { margin: 0; }

@@ -592,6 +592,54 @@ test('标的行情提前走完时：进入下一日停住，但换股仍可用�
   assert.ok(s.bars.dates[s.lastIdx] <= endKeep || s.lastIdx === s.cur, '换股后结束日不应超出本局结束日');
 });
 
+test('停牌：行情跨过本局结束日时，能识别出来并跳到复牌日继续', () => {
+  const main = makeBars(220, { seed: 11 });
+  const st = { code: 'sz000001', name: 'X', boardIdx: 0 };
+  const s = new Session({ bars: main, stock: st, startIdx: 60, horizon: 40, capital: 1e5, fees: false });
+  const endDate = s.endDate;                       // = main.dates[100]
+  // 造一只有缺口的标的：第 89 根起整体推后 400 天。
+  // 于是 65..88 这段还在本局窗口内，下一根（复牌）直接跨过结束日 —— 这就是停牌卡住的成因。
+  // 同一个 seed → 前 89 根日期与 main 完全一致；gapAt/gapDays 内部用 addDays，才是真的加 400 天
+  const g = makeBars(220, { seed: 11, gapAt: 89, gapDays: 400 });
+  assert.ok(g.dates[88] < endDate && g.dates[89] > endDate, '缺口要正好盖住结束日');
+
+  const r = s.switchStock({ bars: g, stock: { code: 'sz000002', name: 'Y', boardIdx: 0 }, curIdx: 65 });
+  assert.equal(r.ok, true, '行情覆盖到结束日，允许换入');
+  assert.equal(s.endDate, endDate, '换股后本局结束日不变');
+
+  while (s.canAct) s.nextDay();
+  assert.equal(s.cur, 88, '推进到缺口前最后一根');
+  assert.equal(s.day, 23);
+  assert.equal(s.outOfData, true, '进入「行情走完」状态');
+  assert.equal(s.canSwitch, true, '空仓时仍可换股');
+
+  const sp = s.suspension;
+  assert.ok(sp, '应识别为停牌（后面还有 K 线，只是跨过了结束日）');
+  assert.equal(sp.idx, 89, '可跳的目标是复牌那根');
+  assert.equal(sp.from, g.dates[88]);
+  assert.equal(sp.resume, g.dates[89]);
+  assert.ok(sp.gapDays > 300, `缺口 ${sp.gapDays} 天`);
+
+  // 有持仓不影响"跳到复牌日"（只有换股才要求空仓）
+  s.shares = 100; s.costTotal = 2000;
+  const jr = s.jumpToResume();
+  assert.equal(jr.ok, true);
+  assert.equal(jr.left, 17, '剩下 40-23=17 个交易日');
+  assert.equal(s.cur, 89, '落到复牌日');
+  assert.equal(s.date, g.dates[89]);
+  assert.equal(s.lastIdx, 106, '剩余交易日重新排在复牌之后');
+  assert.equal(s.endDate, g.dates[106], '结束日相应顺延');
+  assert.equal(s.outOfData, false);
+  assert.equal(s.canAct, true, '可以继续推进');
+  assert.equal(s.shares, 100, '持仓不受影响');
+
+  // 真·数据到头（退市）的标的：没有可跳的目标
+  const tail = makeBars(70, { seed: 33 });
+  const s2 = new Session({ bars: main, stock: st, startIdx: 60, horizon: 20, capital: 1e5, fees: false });
+  const rr = s2.switchStock({ bars: tail, stock: { code: 'sz000009', name: 'Z', boardIdx: 0 }, curIdx: 65 });
+  assert.equal(rr.ok, false, '行情没覆盖到结束日的不让换入');
+});
+
 test('换股会作废旧标的的未成交委托', () => {
   const bars = makeBars(220, { seed: 11 });
   const bars2 = makeBars(220, { seed: 22 }); bars2.dates.set(bars.dates);
