@@ -27,10 +27,10 @@ for (const [code, list] of byCode) {
     checked++;
     if (d.mask !== c.mask) {
       bad++;
-      console.log(`  ❌ ${code} ${c.date}  Python=${c.mask.toString(2).padStart(5,'0')} ` +
-                  `JS=${d.mask.toString(2).padStart(5,'0')}`);
+      console.log(`  ❌ ${code} ${c.date}  Python=${c.mask.toString(2).padStart(8,'0')} ` +
+                  `JS=${d.mask.toString(2).padStart(8,'0')}`);
     }
   }
 }
-console.log(`比对 ${checked} 个「股票×日期」的筛选掩码（7 个条件）: ${bad ? '❌ ' + bad + ' 处不一致' : '✅ 全部一致'}`);
+console.log(`比对 ${checked} 个「股票×日期」的筛选掩码（8 个条件）: ${bad ? '❌ ' + bad + ' 处不一致' : '✅ 全部一致'}`);
 process.exit(bad ? 1 : 0);

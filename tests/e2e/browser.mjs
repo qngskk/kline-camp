@@ -544,8 +544,31 @@ check((await dateOf()) === swDate, '换股后日期不应改变');
 check((await page.evaluate(() => window.__kline.session.switches.length)) === 3, '换股次数应为 3');
 check((await text('#hud-progress')).startsWith('0 /'), '换股不应消耗交易日');
 check((await page.evaluate(() => window.__kline.session.shares)) === 0, '换股不应产生持仓');
-await clickAdd('0.25'); await wait(150);
-await page.click('#btn-next'); await wait(550);
+// 尾盘口径下「加仓」先进委托篮，点「进入下一日」才按今日收盘价成交；
+// 随机模式的标的还可能涨停 / 一手买不起（高价股），那样这笔委托不会成交。
+// 这里换到能成交的标的为止，换不动就重开一局，别让随机标的影响断言。
+let bought = 0, diag = '';
+for (let k = 0; k < 8 && !bought; k++) {
+  if (k && k % 4 === 0) {                           // 换了 4 只都买不进 → 重开一局换日期
+    await page.click('#btn-restart');
+    await page.waitForSelector('#modal-setup:not(.hidden)');
+    await page.click('#seg-horizon button[data-h="30"]');
+    await page.click('#seg-mode button[data-mode="random"]');
+    await startSession();
+  }
+  await clickAdd('0.25'); await wait(200);
+  await page.click('#btn-next'); await wait(600);
+  const st = await page.evaluate(() => {
+    const s = window.__kline.session;
+    return { shares: s.shares, fill: s.fillModeLabel, pend: s.pending.length,
+             cash: Math.round(s.cash), price: s.price,
+             toast: (document.getElementById('toast')?.innerText || '').replace(/\s+/g, ' ').slice(-120) };
+  });
+  bought = st.shares;
+  if (!bought) { diag = JSON.stringify(st); await page.click('#btn-switch'); await wait(450); }
+}
+console.log('   9b 加仓诊断:', diag || '一次成交');
+check(bought > 0, '加 1/4 后应有持仓（换到能成交的标的/重开一局为止）');
 check(await page.$eval('#btn-switch', el => el.disabled), '有持仓时应禁止换股');
 await clickReduce('1'); await wait(150);
 await page.click('#btn-next'); await wait(550);
@@ -622,12 +645,15 @@ check(await page.$eval('#filter-dd', el => el.classList.contains('hidden')), '�
 await page.click('#btn-filter'); await wait(200);
 const ddItems = await page.$$eval('#filter-dd .dd-item', els => els.map(e => e.textContent.trim()));
 console.log('   下拉项数:', ddItems.length);
-check(ddItems.length === 7, '筛选下拉应有 7 个条件，实际 ' + ddItems.length);
+check(ddItems.length === 8, '筛选下拉应有 8 个条件，实际 ' + ddItems.length);
 check(ddItems.some(t => /收盘价高于前 2 日最高价/.test(t)), '缺少③收盘破前2日高');
 check(ddItems.some(t => /收盘价突破/.test(t)), '缺少④收盘破前高');
 check(ddItems.some(t => /MACD 零下金叉/.test(t)), '缺少⑤MACD零下金叉');
 check(ddItems.some(t => /大实体红柱/.test(t)), '缺少⑥底部大实体红柱');
 check(ddItems.some(t => /大实体绿柱/.test(t)), '缺少⑦顶部大实体绿柱');
+check(ddItems.some(t => /均线多头排列/.test(t)), '缺少⑧均线多头排列');
+check(ddItems.some(t => /MA5 &gt; MA10 &gt; MA20 &gt; MA60/.test(t)) ||
+      ddItems.some(t => /MA5 > MA10 > MA20 > MA60/.test(t)), '⑧ 应写明 MA5>MA10>MA20>MA60');
 await page.click('body', { offset: { x: 5, y: 5 } }); await wait(200);
 check(await page.$eval('#filter-dd', el => el.classList.contains('hidden')), '点空白处应收起下拉');
 
@@ -647,7 +673,12 @@ const condAt = () => page.evaluate(() => {
            breakPrior: c[i] > o[i] && c[i] > ph,
            macdCross: m.dif[i] > m.dea[i] && m.dif[i - 1] <= m.dea[i - 1] && m.dif[i] < 0,
            bigRed: c[i] > o[i] && (Math.abs(c[i] - o[i]) / c[i - 1]) >= 0.06 && pos <= 0.20,
-           bigGreen: c[i] < o[i] && (Math.abs(c[i] - o[i]) / c[i - 1]) >= 0.06 && pos >= 0.80 };
+           bigGreen: c[i] < o[i] && (Math.abs(c[i] - o[i]) / c[i - 1]) >= 0.06 && pos >= 0.80,
+           maOf: (n) => { let s2 = 0; for (let k = i - n + 1; k <= i; k++) s2 += c[k]; return s2 / n; },
+           maBull: (() => {
+             const f = (n) => { let s2 = 0; for (let k = i - n + 1; k <= i; k++) s2 += c[k]; return s2 / n; };
+             return f(5) - f(10) > 1e-9 && f(10) - f(20) > 1e-9 && f(20) - f(60) > 1e-9;
+           })() };
 });
 
 for (const [label, bits, key] of [
@@ -656,6 +687,7 @@ for (const [label, bits, key] of [
   ['④收盘破前高', [8], 'breakPrior'],
   ['⑥底部大实体红柱', [32], 'bigRed'],
   ['⑦顶部大实体绿柱', [64], 'bigGreen'],
+  ['⑧均线多头排列', [128], 'maBull'],
 ]) {
   await setFilter(bits);
   const before = await page.evaluate(() => window.__kline.session.switches.length);
@@ -667,15 +699,15 @@ for (const [label, bits, key] of [
   else check(/没有一只|无匹配|极少/.test(await page.evaluate(() => document.getElementById('toast')?.innerText || '')), '无匹配时应给出提示');
 }
 await setFilter([]);
-await setFilter([1, 2, 4, 8, 16, 32, 64]);
+await setFilter([1, 2, 4, 8, 16, 32, 64, 128]);
 const b5 = await page.evaluate(() => window.__kline.session.switches.length);
 await page.click('#btn-switch'); await wait(1500);
 const a5 = await page.evaluate(() => window.__kline.session.switches.length);
 const c5 = await condAt();
-console.log(`   七条全选 → ${a5 > b5 ? '换到 ' + c5.code : '该日期无匹配（正常）'}`);
+console.log(`   八条全选 → ${a5 > b5 ? '换到 ' + c5.code : '该日期无匹配（正常）'}`);
 if (a5 > b5) {
   check(c5.pullback && c5.up2 && c5.break2 && c5.breakPrior && c5.macdCross &&
-        c5.bigRed && c5.bigGreen, '七条全选时必须全部满足');
+        c5.bigRed && c5.bigGreen && c5.maBull, '八条全选时必须全部满足');
 }
 await shot('15-filter5');
 

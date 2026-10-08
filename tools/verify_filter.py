@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""筛选索引一致性验证：filter.bin 的生成口径（Python）必须与前端判定（JS）逐位一致（7 个条件）。
+"""筛选索引一致性验证：filter.bin 的生成口径（Python）必须与前端判定（JS）逐位一致（8 个条件）。
 
 之所以必须验证：MACD 的 EMA 以第一根为种子，是**路径依赖**的 ——
 用全历史算 vs 用窗口内数据算，金叉位置会错开。这里随机抽若干「股票×日期」，
@@ -19,8 +19,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-from tools.build_data import (FILTER_MIN_IDX, FILTER_PRIOR_N, RANDOM_FROM, RANDOM_TO,
-                              _ema, _r2, decode_pack)  # noqa: E402
+from tools.build_data import (FILTER_MIN_IDX, FILTER_PRIOR_N, MA_EPS, RANDOM_FROM,
+                              RANDOM_TO, _ema, _r2, decode_pack)  # noqa: E402
 from src import tdx  # noqa: E402
 import numpy as np  # noqa: E402
 
@@ -60,6 +60,10 @@ def mask_of(code: str, date: int) -> int:
         v |= 32
     if big and cl[i] < op[i] and pos >= 0.80:
         v |= 64
+    if (cl[i - 4:i + 1].mean() - cl[i - 9:i + 1].mean() > MA_EPS
+            and cl[i - 9:i + 1].mean() - cl[i - 19:i + 1].mean() > MA_EPS
+            and cl[i - 19:i + 1].mean() - cl[i - 59:i + 1].mean() > MA_EPS):
+        v |= 128
     return v
 
 
@@ -100,11 +104,15 @@ def masks_of(code: str, dates):
             v |= 32
         if big and cl[i] < op[i] and pos >= 0.80:
             v |= 64
+        if (cl[i - 4:i + 1].mean() - cl[i - 9:i + 1].mean() > MA_EPS
+                and cl[i - 9:i + 1].mean() - cl[i - 19:i + 1].mean() > MA_EPS
+                and cl[i - 19:i + 1].mean() - cl[i - 59:i + 1].mean() > MA_EPS):
+            v |= 128
         out[date] = v
     return out
 
 
-BITS = (1, 2, 4, 8, 16, 32, 64)
+BITS = (1, 2, 4, 8, 16, 32, 64, 128)
 
 
 def main(n=400):

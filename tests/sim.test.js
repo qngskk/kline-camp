@@ -829,9 +829,10 @@ test('filterHit：掩码必须覆盖全部勾选项', () => {
   assert.equal(filterHit(0b00011, 0b00011), true);
   assert.equal(filterHit(0b00011, 0b00111), false);
   assert.equal(filterHit(0b11111, 0b00100), true);
-  assert.equal(FILTER_ALL, 127);
-  assert.equal(FILTER_DEFS.length, 7);
-  assert.deepEqual(FILTER_DEFS.map(d => d.bit), [1, 2, 4, 8, 16, 32, 64]);
+  assert.equal(FILTER_ALL, 255);
+  assert.equal(FILTER_DEFS.length, 8);
+  assert.deepEqual(FILTER_DEFS.map(d => d.bit), [1, 2, 4, 8, 16, 32, 64, 128]);
+  assert.equal(FILTER_DEFS.find(d => d.bit === 128).key, 'maBull');
 });
 
 test('费用会真实侵蚀收益', () => {
@@ -842,4 +843,38 @@ test('费用会真实侵蚀收益', () => {
   assert.ok(b.totalFee > 0);
   assert.ok(b.equity < a.equity, '计费后收益应更低');
   assert.equal(a.totalFee, 0);
+});
+
+test('filterDetail：⑧ 均线多头排列（MA5>MA10>MA20>MA60）', () => {
+  const n = 160;
+  const mk = (fn) => {
+    const o = new Float64Array(n), h = new Float64Array(n), l = new Float64Array(n), c = new Float64Array(n);
+    for (let i = 0; i < n; i++) { const v = fn(i); o[i] = v.o; h[i] = v.h; l[i] = v.l; c[i] = v.c; }
+    return { n, dates: new Int32Array(n).map((_, i) => 20240101 + i), open: o, high: h, low: l,
+             close: c, vol: new Float64Array(n).fill(1e6) };
+  };
+  // 均线值本身要算对：MA5 = 最近 5 根收盘的算术平均
+  const up = mk(i => { const c = 10 + i * 0.05; return { o: c - 0.02, h: c + 0.05, l: c - 0.05, c }; });
+  let s5 = 0; for (let k = 146; k <= 150; k++) s5 += up.close[k];
+  assert.ok(Math.abs(filterDetail(up, 150).ma5 - s5 / 5) < 1e-9, 'MA5 应等于最近 5 根收盘均值');
+  // 持续上涨 → 多头排列成立
+  const d = filterDetail(up, 150);
+  assert.ok(d.ma5 > d.ma10 && d.ma10 > d.ma20 && d.ma20 > d.ma60, '上涨走势 MA5>MA10>MA20>MA60');
+  assert.equal(d.maBull, true);
+  assert.ok((d.mask & 128) !== 0, '掩码应包含 128');
+  // 持续下跌 → 空头排列，不成立
+  const dn = mk(i => { const c = 30 - i * 0.05; return { o: c + 0.02, h: c + 0.05, l: c - 0.05, c }; });
+  assert.equal(filterDetail(dn, 150).maBull, false);
+  // 横盘（收盘全相等）→ 两条均线数值相同，绝不能判成多头排列
+  const flat = mk(() => ({ o: 10, h: 10, l: 10, c: 10 }));
+  const df = filterDetail(flat, 150);
+  assert.equal(df.ma5, df.ma60, '全等收盘时各均线相等');
+  assert.equal(df.maBull, false, '相等不算多头排列');
+  // 只差一点点的伪多头（MA5 略高于 MA10，但 MA10 < MA20）→ 不成立
+  const mix = mk(i => (i < 100 ? { o: 9, h: 9.2, l: 8.9, c: 9 }
+                                : { o: 10, h: 12, l: 9.9, c: 11 - (i - 100) * 0.05 }));
+  assert.equal(filterDetail(mix, 150).maBull, false);
+  // i < 60 时数据不足 → ready=false（与 app 的 PRE_BARS 一致）
+  assert.equal(filterDetail(up, 59).ready, false);
+  assert.equal(filterDetail(up, 59).mask, 0);
 });

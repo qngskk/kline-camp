@@ -572,13 +572,13 @@ export function macd(closes, fast = 12, slow = 26, signal = 9) {
 }
 
 /**
- * 换股筛选条件 —— 全部由用户 2026-09-22 指定，代码里不加任何额外条件。
+ * 换股筛选条件 —— ①②为用户 2026-09-22 指定，③④⑤⑥⑦依据资料修正，⑧为用户 2026-10-07 指定。
+ * 每条的确切口径见各自的 label（以 label 为准，这段注释只是索引）。代码里不加任何额外条件。
  * 条件之间是「且」的关系；一条都不勾选 = 完全随机。
- *   ① 从近 60 日**最高收盘**回落 3%~15%
- *   ② 最近连续 2 天收盘上涨
- *   ③ 当前 K 线**实体**（开收之间的部分）高于**前 2 日的最高价**
- *   ④ 当前 K 线**实体**高于**最近一个前期高点**
- *   ⑤ MACD 金叉（DIF 上穿 DEA）
+ *   ① 上涨趋势中回踩 2 天        ② 最近连续 2 天收盘上涨
+ *   ③ 收阳且收盘价高于前 2 日最高价  ④ 收阳且收盘价突破「前期高点」
+ *   ⑤ MACD 零下金叉             ⑥ 底部大实体红柱
+ *   ⑦ 顶部大实体绿柱             ⑧ 均线多头排列（MA5>MA10>MA20>MA60）
  */
 export const FILTER_DEFS = [
   { bit: 1, key: 'pullback', short: '连涨后回踩3~10%',
@@ -594,8 +594,21 @@ export const FILTER_DEFS = [
     label: '红柱（收阳）且实体 ≥ 前收盘 6%，且收盘处于近 20 日区间的下 20%' },
   { bit: 64, key: 'bigGreen', short: '顶部大实体绿柱',
     label: '绿柱（收阴）且实体 ≥ 前收盘 6%，且收盘处于近 20 日区间的上 20%' },
+  { bit: 128, key: 'maBull', short: '均线多头排列',
+    label: '均线多头排列：MA5 > MA10 > MA20 > MA60（收盘价简单均线，短均线在上、长均线在下）' },
 ];
 export const FILTER_ALL = FILTER_DEFS.reduce((a, d) => a | d.bit, 0);
+/** 均线大小比较的容差：只用来抵消「Python np.sum / JS 顺序累加」浮点求和顺序造成的
+ *  最后一位差异。若不设容差，两条均线恰好相等（横盘股很常见）时 Python 与 JS 的判定
+ *  会不一致。1e-9 远小于一分钱，不影响任何真实信号。 */
+export const MA_EPS = 1e-9;
+/** 收盘价的 n 日简单均线（第 i 根）；不足 n 根时返回 NaN */
+export function smaAt(c, i, n) {
+  if (i + 1 < n) return NaN;
+  let s = 0;
+  for (let k = i - n + 1; k <= i; k++) s += c[k];
+  return s / n;
+}
 /** 「前期高点」的回看根数（不含当日）。20 根≈一个月：够近，能反映"最近的高点"，
  *  又不至于像分形法那样必须等右侧 k 根走完才确认（会漏掉 2 天前刚做出的高点）。 */
 export const PRIOR_HIGH_LOOKBACK = 20;
@@ -653,12 +666,16 @@ export function filterDetail(bars, i, macdRes, opt = {}) {
   const pos = span20 > 0 ? (c[i] - lo20) / span20 : 0.5;    // 收盘在近 20 日区间的位置
   const bigRed = c[i] > o[i] && bigBody && pos <= 0.20;     // ⑥ 底部大实体红柱
   const bigGreen = c[i] < o[i] && bigBody && pos >= 0.80;   // ⑦ 顶部大实体绿柱
+  // ⑧ 均线多头排列：MA5 > MA10 > MA20 > MA60
+  const ma5 = smaAt(c, i, 5), ma10 = smaAt(c, i, 10),
+        ma20 = smaAt(c, i, 20), ma60 = smaAt(c, i, 60);
+  const maBull = ma5 - ma10 > MA_EPS && ma10 - ma20 > MA_EPS && ma20 - ma60 > MA_EPS;
   const mask = (pullback ? 1 : 0) | (up2 ? 2 : 0) | (break2 ? 4 : 0) |
                (breakPrior ? 8 : 0) | (macdCross ? 16 : 0) |
-               (bigRed ? 32 : 0) | (bigGreen ? 64 : 0);
+               (bigRed ? 32 : 0) | (bigGreen ? 64 : 0) | (maBull ? 128 : 0);
   return { ready: true, mask, dd, priorIdx: pj, priorHigh: ph, bullish,
            trendUp, inRange, down2, pullback, up2, break2, breakPrior, macdCross,
-           body, bigBody, pos, bigRed, bigGreen };
+           body, bigBody, pos, bigRed, bigGreen, ma5, ma10, ma20, ma60, maBull };
 }
 
 /** mask 是否覆盖选中的全部条件 */

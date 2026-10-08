@@ -169,6 +169,7 @@ def build_bench(out_dir: str, index_code: str = "sh000300"):
 FILTER_LOOKBACK = 60
 FILTER_PRIOR_N = 20         # 「前期高点」= 近 20 根（不含当日）的最高价，≈一个月
 FILTER_MIN_IDX = 60         # 筛选判定的最低下标，必须与前端 PRE_BARS 一致（写 70 会留下一个 10 天的死区）
+MA_EPS = 1e-9               # ⑧ 均线多头排列的比较容差，必须与 docs/js/sim.js 的 MA_EPS 一致
 
 
 def _ema(x: np.ndarray, n: int) -> np.ndarray:
@@ -196,11 +197,12 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
     位定义必须与 docs/js/sim.js 的 FILTER_DEFS 一致：
       1  上涨趋势中回踩2天（T-3高于5天前 + 相对T-3最高价低3~10% + T-1、T 都低于 T-2 收盘）
       2  最近连续 2 天收盘上涨
-      4  当日收阳，且开盘价高于前 2 日最高价
-      8  当日收阳，且开盘价高于「前期高点」
+      4  当日收阳，且**收盘价**高于前 2 日最高价
+      8  当日收阳，且**收盘价**高于「前期高点」
       16 MACD 零下金叉（DIF 上穿 DEA 且 DIF < 0）
       32 底部大实体红柱：收阳 且 实体 ≥ 前收盘6% 且 收盘在近20日区间下20%
       64 顶部大实体绿柱：收阴 且 实体 ≥ 前收盘6% 且 收盘在近20日区间上20%
+      128 均线多头排列：MA5 > MA10 > MA20 > MA60（收盘价简单均线）
     """
     nd = len(axis["dates"])
     m = np.zeros(nd, dtype=np.uint8)
@@ -223,6 +225,14 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
         return m
     dif = _ema(cl, 12) - _ema(cl, 26)
     dea = _ema(dif, 9)
+
+    # 收盘价简单均线（供 ⑧ 均线多头排列用）；cumsum 一次算完，避免逐日重复求和
+    def _sma(a, k):
+        out = np.full(a.size, np.nan)
+        cs = np.concatenate([[0.0], np.cumsum(a)])
+        out[k - 1:] = (cs[k:] - cs[:-k]) / k
+        return out
+    ma5, ma10, ma20, ma60 = _sma(cl, 5), _sma(cl, 10), _sma(cl, 20), _sma(cl, 60)
 
     # prior_hi[i] = max(hi[max(0,i-N):i])：近 N 根、**不含当日**的最高价
     # 用区间最高价而不是分形拐点 —— 分形高点必须等右侧 k 根走完才能确认，
@@ -275,6 +285,10 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
             v |= 32
         if big and cl[i] < op[i] and pos >= 0.80:
             v |= 64
+        # ⑧ 均线多头排列（容差 MA_EPS：抵消 np.sum 与 JS 顺序累加的浮点差异，见 sim.js）
+        if (ma5[i] - ma10[i] > MA_EPS and ma10[i] - ma20[i] > MA_EPS
+                and ma20[i] - ma60[i] > MA_EPS):
+            v |= 128
         m[k] = v
     return m
 
@@ -287,7 +301,9 @@ def build_filter(stocks, out_dir: str):
         ⑤ MACD 零下金叉    2.4%
         ⑥ 底部大实体红柱  0.057%   ← 全市场平均每天约 2.8 只
         ⑦ 顶部大实体绿柱  0.019%   ← 全市场平均每天不到 1 只
-    其余（②23% / ③16% / ①8.8%）盲抽十几只就能命中，建表反而占空间。
+    其余（②23% / ③16% / ①8.8% / ⑧均线多头排列 22.6%）盲抽十几只就能命中，建表反而占空间。
+    ⑧ 虽然通过率不算高，但它是个**常见条件**：单勾它走盲抽（144 个候选内几乎必中），
+       和稀有条件同勾时由稀有条件先锁定候选、再逐只复核 ⑧，所以不需要建倒排表。
     这样任意组合（含"全选"）都能一次锁定候选，不必盲抽。
 
     格式（全部小端）：
