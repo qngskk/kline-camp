@@ -845,7 +845,7 @@ test('费用会真实侵蚀收益', () => {
   assert.equal(a.totalFee, 0);
 });
 
-test('filterDetail：⑧ 均线多头排列（MA5>MA10>MA20>MA60）', () => {
+test('filterDetail：⑧ 均线多头排列 + 短期均线仍向上（用户 2026-10-07 加严）', () => {
   const n = 160;
   const mk = (fn) => {
     const o = new Float64Array(n), h = new Float64Array(n), l = new Float64Array(n), c = new Float64Array(n);
@@ -857,11 +857,41 @@ test('filterDetail：⑧ 均线多头排列（MA5>MA10>MA20>MA60）', () => {
   const up = mk(i => { const c = 10 + i * 0.05; return { o: c - 0.02, h: c + 0.05, l: c - 0.05, c }; });
   let s5 = 0; for (let k = 146; k <= 150; k++) s5 += up.close[k];
   assert.ok(Math.abs(filterDetail(up, 150).ma5 - s5 / 5) < 1e-9, 'MA5 应等于最近 5 根收盘均值');
-  // 持续上涨 → 多头排列成立
+  // 持续上涨 → 排列成立，且短期均线还在上行
   const d = filterDetail(up, 150);
   assert.ok(d.ma5 > d.ma10 && d.ma10 > d.ma20 && d.ma20 > d.ma60, '上涨走势 MA5>MA10>MA20>MA60');
+  assert.equal(d.maBullAligned, true);
+  assert.equal(d.maBullRising, true, '持续上涨时 MA5、MA10 应高于昨日');
   assert.equal(d.maBull, true);
   assert.ok((d.mask & 128) !== 0, '掩码应包含 128');
+  // 仍是多头排列，但短期均线已经拐头 → 必须被剔除（用户 2026-10-07 的要求）
+  {
+    // 稳步上涨中最后一天收跌 0.60：MA5 掉头，但 MA5 仍在 MA10 上方 → 只看排列会误选
+    const c = new Float64Array(n);
+    for (let i = 0; i < n; i++) c[i] = 10 + i * 0.10;
+    c[139] = c[138] - 0.60;
+    const b = mk(i => ({ o: c[i] - 0.01, h: c[i] + 0.05, l: c[i] - 0.05, c: c[i] }));
+    const d2 = filterDetail(b, 139);
+    assert.ok(d2.ma5 > d2.ma10, `排列仍在（MA5 ${d2.ma5.toFixed(2)} > MA10 ${d2.ma10.toFixed(2)}）`);
+    assert.equal(d2.maBullAligned, true, '长均线还没被追上，排列仍在');
+    assert.equal(d2.maBullRising, false, '最后一天收跌 → MA5 已不再高于昨日');
+    assert.equal(d2.maBull, false, '排列 + 末端拐头 → 不应再被选中');
+    assert.equal(d2.mask & 128, 0, '掩码不应含 128');
+    // 上一根还在涨、这一根开始跌：同样要剔除（MA10 可能还没拐，但 MA5 已拐）
+    const b2 = mk(i => ({ o: c[i] - 0.01, h: c[i] + 0.05, l: c[i] - 0.05, c: c[i] }));
+    assert.equal(filterDetail(b2, 138).maBullRising, true, '前一天还在涨 → 应通过');
+    assert.equal(filterDetail(b2, 139).maBull, false, '拐头当天就该被剔除');
+  }
+  {
+    // 连续下跌把排列本身也破坏了 → 同样不成立（两条路都要能挡住）
+    const c = new Float64Array(n);
+    for (let i = 0; i < n; i++) c[i] = 10 + i * 0.10;
+    for (let i = 130; i < n; i++) c[i] = c[129] - (i - 129) * 0.30;
+    const b = mk(i => ({ o: c[i] - 0.01, h: c[i] + 0.05, l: c[i] - 0.05, c: c[i] }));
+    const d4 = filterDetail(b, 139);
+    assert.equal(d4.maBullAligned, false, '连续下跌后 MA5 会掉到 MA10 下方');
+    assert.equal(d4.maBull, false);
+  }
   // 持续下跌 → 空头排列，不成立
   const dn = mk(i => { const c = 30 - i * 0.05; return { o: c + 0.02, h: c + 0.05, l: c - 0.05, c }; });
   assert.equal(filterDetail(dn, 150).maBull, false);

@@ -246,8 +246,11 @@ if (await page.$eval('#ma-dd', el => el.classList.contains('hidden'))) {
   await page.click('#btn-ma'); await wait(250);
 }
 check(!(await page.$eval('#ma-dd', el => el.classList.contains('hidden'))), '均线下拉应已展开');
-// 均线天数不能超过「当前 bar 之前已有的 K 线数」，否则这条线在当前 bar 上算不出来（正常）
-const period = await page.evaluate(() => Math.max(30, Math.min(120, window.__kline.session.cur + 1)));
+// 均线天数不能超过「当前 bar 之前已有的 K 线数」；但也不能正好等于可用根数 ——
+// 那样这条均线只有一个点，只有一个 moveTo 的路径画不出任何像素（实测偶发 0 像素）。
+// 取可用根数的一半（上限 120、下限 30），保证至少有两三个点可连成线。
+const period = await page.evaluate(() =>
+  Math.max(30, Math.min(120, Math.floor((window.__kline.session.cur + 1) / 2))));
 await page.click('#ma-custom');
 await page.type('#ma-custom', String(period));
 await page.keyboard.press('Enter');
@@ -705,6 +708,7 @@ check(ddItems.some(t => /MACD 零下金叉/.test(t)), '缺少⑤MACD零下金叉
 check(ddItems.some(t => /大实体红柱/.test(t)), '缺少⑥底部大实体红柱');
 check(ddItems.some(t => /大实体绿柱/.test(t)), '缺少⑦顶部大实体绿柱');
 check(ddItems.some(t => /均线多头排列/.test(t)), '缺少⑧均线多头排列');
+check(ddItems.some(t => /仍高于昨日/.test(t)), '⑧ 应写明「MA5、MA10 仍高于昨日」');
 check(ddItems.some(t => /MA5 &gt; MA10 &gt; MA20 &gt; MA60/.test(t)) ||
       ddItems.some(t => /MA5 > MA10 > MA20 > MA60/.test(t)), '⑧ 应写明 MA5>MA10>MA20>MA60');
 await page.click('body', { offset: { x: 5, y: 5 } }); await wait(200);
@@ -729,8 +733,10 @@ const condAt = () => page.evaluate(() => {
            bigGreen: c[i] < o[i] && (Math.abs(c[i] - o[i]) / c[i - 1]) >= 0.06 && pos >= 0.80,
            maOf: (n) => { let s2 = 0; for (let k = i - n + 1; k <= i; k++) s2 += c[k]; return s2 / n; },
            maBull: (() => {
-             const f = (n) => { let s2 = 0; for (let k = i - n + 1; k <= i; k++) s2 += c[k]; return s2 / n; };
-             return f(5) - f(10) > 1e-9 && f(10) - f(20) > 1e-9 && f(20) - f(60) > 1e-9;
+             const f = (at, n) => { let s2 = 0; for (let k = at - n + 1; k <= at; k++) s2 += c[k]; return s2 / n; };
+             return f(i, 5) - f(i, 10) > 1e-9 && f(i, 10) - f(i, 20) > 1e-9 &&
+                    f(i, 20) - f(i, 60) > 1e-9 &&
+                    f(i, 5) - f(i - 1, 5) > 1e-9 && f(i, 10) - f(i - 1, 10) > 1e-9;
            })() };
 });
 

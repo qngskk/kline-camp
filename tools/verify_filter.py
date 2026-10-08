@@ -62,7 +62,9 @@ def mask_of(code: str, date: int) -> int:
         v |= 64
     if (cl[i - 4:i + 1].mean() - cl[i - 9:i + 1].mean() > MA_EPS
             and cl[i - 9:i + 1].mean() - cl[i - 19:i + 1].mean() > MA_EPS
-            and cl[i - 19:i + 1].mean() - cl[i - 59:i + 1].mean() > MA_EPS):
+            and cl[i - 19:i + 1].mean() - cl[i - 59:i + 1].mean() > MA_EPS
+            and cl[i - 4:i + 1].mean() - cl[i - 5:i].mean() > MA_EPS
+            and cl[i - 9:i + 1].mean() - cl[i - 10:i].mean() > MA_EPS):
         v |= 128
     return v
 
@@ -106,7 +108,9 @@ def masks_of(code: str, dates):
             v |= 64
         if (cl[i - 4:i + 1].mean() - cl[i - 9:i + 1].mean() > MA_EPS
                 and cl[i - 9:i + 1].mean() - cl[i - 19:i + 1].mean() > MA_EPS
-                and cl[i - 19:i + 1].mean() - cl[i - 59:i + 1].mean() > MA_EPS):
+                and cl[i - 19:i + 1].mean() - cl[i - 59:i + 1].mean() > MA_EPS
+                and cl[i - 4:i + 1].mean() - cl[i - 5:i].mean() > MA_EPS
+                and cl[i - 9:i + 1].mean() - cl[i - 10:i].mean() > MA_EPS):
             v |= 128
         out[date] = v
     return out

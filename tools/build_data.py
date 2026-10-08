@@ -202,7 +202,7 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
       16 MACD 零下金叉（DIF 上穿 DEA 且 DIF < 0）
       32 底部大实体红柱：收阳 且 实体 ≥ 前收盘6% 且 收盘在近20日区间下20%
       64 顶部大实体绿柱：收阴 且 实体 ≥ 前收盘6% 且 收盘在近20日区间上20%
-      128 均线多头排列：MA5 > MA10 > MA20 > MA60（收盘价简单均线）
+      128 均线多头排列且短期均线仍在上行：MA5 > MA10 > MA20 > MA60，且 MA5、MA10 高于昨日
     """
     nd = len(axis["dates"])
     m = np.zeros(nd, dtype=np.uint8)
@@ -285,9 +285,10 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
             v |= 32
         if big and cl[i] < op[i] and pos >= 0.80:
             v |= 64
-        # ⑧ 均线多头排列（容差 MA_EPS：抵消 np.sum 与 JS 顺序累加的浮点差异，见 sim.js）
+        # ⑧ 均线多头排列 + 短期均线仍在上行（容差 MA_EPS 抵消 np.sum 与 JS 顺序累加的差异）
         if (ma5[i] - ma10[i] > MA_EPS and ma10[i] - ma20[i] > MA_EPS
-                and ma20[i] - ma60[i] > MA_EPS):
+                and ma20[i] - ma60[i] > MA_EPS
+                and ma5[i] - ma5[i - 1] > MA_EPS and ma10[i] - ma10[i - 1] > MA_EPS):
             v |= 128
         m[k] = v
     return m
