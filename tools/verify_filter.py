@@ -25,6 +25,29 @@ from src import tdx  # noqa: E402
 import numpy as np  # noqa: E402
 
 
+def _ma_bull(cl, i) -> bool:
+    """⑧ 的独立实现：排列 + 四条都高于昨日 + MA5 连续上行≥3天 + 收盘在 MA5 之上。
+
+    故意不调用 build_data 里的实现 —— 校验的意义就在于两套代码各写一遍。
+    """
+    def m(at, n):
+        return float(cl[at - n + 1:at + 1].mean())
+    if not (m(i, 5) - m(i, 10) > MA_EPS and m(i, 10) - m(i, 20) > MA_EPS
+            and m(i, 20) - m(i, 60) > MA_EPS):
+        return False
+    for n in (5, 10, 20, 60):
+        if m(i, n) - m(i - 1, n) <= MA_EPS:
+            return False
+    if cl[i] - m(i, 5) <= MA_EPS:
+        return False
+    run = 0
+    t = i
+    while t >= 1 and m(t, 5) - m(t - 1, 5) > MA_EPS:
+        run += 1
+        t -= 1
+    return run >= 3
+
+
 def mask_of(code: str, date: int) -> int:
     """与 build_filter 完全相同的实现（唯一区别：只算一天）"""
     d = decode_pack(open(os.path.join(ROOT, "docs", "data", code[2:] + ".bin"), "rb").read())
@@ -60,11 +83,7 @@ def mask_of(code: str, date: int) -> int:
         v |= 32
     if big and cl[i] < op[i] and pos >= 0.80:
         v |= 64
-    if (cl[i - 4:i + 1].mean() - cl[i - 9:i + 1].mean() > MA_EPS
-            and cl[i - 9:i + 1].mean() - cl[i - 19:i + 1].mean() > MA_EPS
-            and cl[i - 19:i + 1].mean() - cl[i - 59:i + 1].mean() > MA_EPS
-            and cl[i - 4:i + 1].mean() - cl[i - 5:i].mean() > MA_EPS
-            and cl[i - 9:i + 1].mean() - cl[i - 10:i].mean() > MA_EPS):
+    if _ma_bull(cl, i):
         v |= 128
     return v
 
@@ -106,11 +125,7 @@ def masks_of(code: str, dates):
             v |= 32
         if big and cl[i] < op[i] and pos >= 0.80:
             v |= 64
-        if (cl[i - 4:i + 1].mean() - cl[i - 9:i + 1].mean() > MA_EPS
-                and cl[i - 9:i + 1].mean() - cl[i - 19:i + 1].mean() > MA_EPS
-                and cl[i - 19:i + 1].mean() - cl[i - 59:i + 1].mean() > MA_EPS
-                and cl[i - 4:i + 1].mean() - cl[i - 5:i].mean() > MA_EPS
-                and cl[i - 9:i + 1].mean() - cl[i - 10:i].mean() > MA_EPS):
+        if _ma_bull(cl, i):
             v |= 128
         out[date] = v
     return out

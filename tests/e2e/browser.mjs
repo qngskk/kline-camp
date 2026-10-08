@@ -377,7 +377,10 @@ const after = await page.evaluate(() => ({
   shares: document.getElementById('pos-shares').textContent,
 }));
 console.log('   收盘价参考:', closePx, '| 成交后:', JSON.stringify(after));
-check(parseFloat(after.pos) > 60, '三笔加仓成交后仓位应超过 60%，实际 ' + after.pos);
+// 三笔各 1/4 的理论仓位是 75%，但每笔都要按整手（100 股）向下取整，
+// 价格越高、零头损失越大（实测 50.97 元的票只能到 59.4%）—— 这里只校验"明显超过一半"，
+// 三笔是否都成交由下面的 rows.length === 3 与持仓 > 0 保证。
+check(parseFloat(after.pos) > 55, '三笔加仓成交后仓位应明显超过一半，实际 ' + after.pos);
 check(after.prog.startsWith('1 /'), '应推进到第 1 日');
 check(after.rows.length === 3, '应产生 3 笔成交流水，实际 ' + after.rows.length);
 check(after.pendingHidden, '成交后委托篮应清空');
@@ -708,7 +711,8 @@ check(ddItems.some(t => /MACD 零下金叉/.test(t)), '缺少⑤MACD零下金叉
 check(ddItems.some(t => /大实体红柱/.test(t)), '缺少⑥底部大实体红柱');
 check(ddItems.some(t => /大实体绿柱/.test(t)), '缺少⑦顶部大实体绿柱');
 check(ddItems.some(t => /均线多头排列/.test(t)), '缺少⑧均线多头排列');
-check(ddItems.some(t => /仍高于昨日/.test(t)), '⑧ 应写明「MA5、MA10 仍高于昨日」');
+check(ddItems.some(t => /四条均线都高于昨日/.test(t)) && ddItems.some(t => /连涨/.test(t)),
+      '⑧ 应写明「四条均线都高于昨日 / MA5 已连涨 ≥3 天」');
 check(ddItems.some(t => /MA5 &gt; MA10 &gt; MA20 &gt; MA60/.test(t)) ||
       ddItems.some(t => /MA5 > MA10 > MA20 > MA60/.test(t)), '⑧ 应写明 MA5>MA10>MA20>MA60');
 await page.click('body', { offset: { x: 5, y: 5 } }); await wait(200);
@@ -734,9 +738,12 @@ const condAt = () => page.evaluate(() => {
            maOf: (n) => { let s2 = 0; for (let k = i - n + 1; k <= i; k++) s2 += c[k]; return s2 / n; },
            maBull: (() => {
              const f = (at, n) => { let s2 = 0; for (let k = at - n + 1; k <= at; k++) s2 += c[k]; return s2 / n; };
-             return f(i, 5) - f(i, 10) > 1e-9 && f(i, 10) - f(i, 20) > 1e-9 &&
-                    f(i, 20) - f(i, 60) > 1e-9 &&
-                    f(i, 5) - f(i - 1, 5) > 1e-9 && f(i, 10) - f(i - 1, 10) > 1e-9;
+             if (!(f(i, 5) - f(i, 10) > 1e-9 && f(i, 10) - f(i, 20) > 1e-9 && f(i, 20) - f(i, 60) > 1e-9)) return false;
+             for (const n of [5, 10, 20, 60]) if (f(i, n) - f(i - 1, n) <= 1e-9) return false;
+             if (c[i] - f(i, 5) <= 1e-9) return false;
+             let run = 0, t = i;
+             while (t >= 1 && f(t, 5) - f(t - 1, 5) > 1e-9) { run++; t--; }
+             return run >= 3;
            })() };
 });
 

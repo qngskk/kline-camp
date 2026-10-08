@@ -845,7 +845,7 @@ test('费用会真实侵蚀收益', () => {
   assert.equal(a.totalFee, 0);
 });
 
-test('filterDetail：⑧ 均线多头排列 + 短期均线仍向上（用户 2026-10-07 加严）', () => {
+test('filterDetail：⑧ 多头排列 + 末端仍在上行（四条都向上 / MA5 连涨≥3天 / 站上 MA5）', () => {
   const n = 160;
   const mk = (fn) => {
     const o = new Float64Array(n), h = new Float64Array(n), l = new Float64Array(n), c = new Float64Array(n);
@@ -857,13 +857,41 @@ test('filterDetail：⑧ 均线多头排列 + 短期均线仍向上（用户 202
   const up = mk(i => { const c = 10 + i * 0.05; return { o: c - 0.02, h: c + 0.05, l: c - 0.05, c }; });
   let s5 = 0; for (let k = 146; k <= 150; k++) s5 += up.close[k];
   assert.ok(Math.abs(filterDetail(up, 150).ma5 - s5 / 5) < 1e-9, 'MA5 应等于最近 5 根收盘均值');
-  // 持续上涨 → 排列成立，且短期均线还在上行
+  // 持续上涨 → 排列成立、四条都在上行、MA5 连涨很多天、收盘在 MA5 上方
   const d = filterDetail(up, 150);
   assert.ok(d.ma5 > d.ma10 && d.ma10 > d.ma20 && d.ma20 > d.ma60, '上涨走势 MA5>MA10>MA20>MA60');
   assert.equal(d.maBullAligned, true);
-  assert.equal(d.maBullRising, true, '持续上涨时 MA5、MA10 应高于昨日');
+  assert.equal(d.maBullRising, true, '持续上涨时四条均线都应高于昨日');
+  assert.ok(d.ma5RiseDays >= 3, `MA5 应连涨 ≥3 天（实际 ${d.ma5RiseDays}）`);
+  assert.equal(d.aboveMA5, true, '上涨走势收盘应在 MA5 上方');
   assert.equal(d.maBull, true);
   assert.ok((d.mask & 128) !== 0, '掩码应包含 128');
+  // 收盘跌破 MA5（趋势中的一根回调）→ 不算「末端仍在上行」的形态
+  {
+    const b = mk(i => (i === 150 ? { o: up.close[150] - 0.3, h: up.close[150] + 0.02,
+                                     l: up.close[150] - 0.4, c: up.close[150] - 0.35 }
+                                : { o: up.close[i] - 0.02, h: up.close[i] + 0.05,
+                                    l: up.close[i] - 0.05, c: up.close[i] }));
+    const d5 = filterDetail(b, 150);
+    assert.equal(d5.aboveMA5, false, '当天收在 MA5 下方');
+    assert.equal(d5.maBull, false, '收盘不在 MA5 上方就不入选');
+  }
+  // 长均线走平（只有短均线在动）→ 不算「四条都在上行」
+  {
+    const c2 = new Float64Array(n);
+    for (let i = 0; i < 100; i++) c2[i] = 10;
+    for (let i = 100; i < n; i++) c2[i] = 10 + (i - 99) * 0.05;
+    const b6 = mk(i => ({ o: c2[i] - 0.01, h: c2[i] + 0.05, l: c2[i] - 0.05, c: c2[i] }));
+    const d6 = filterDetail(b6, 149);
+    assert.equal(d6.maBullRising, true, '这时四条其实都在上行（构造仍在涨）');
+    const c3 = new Float64Array(n);
+    for (let i = 0; i < 120; i++) c3[i] = 10 + i * 0.05;
+    for (let i = 120; i < n; i++) c3[i] = c3[119];            // 之后完全横盘
+    const b7 = mk(i => ({ o: c3[i] - 0.01, h: c3[i] + 0.05, l: c3[i] - 0.05, c: c3[i] }));
+    const d7 = filterDetail(b7, 149);
+    assert.equal(d7.maBullRising, false, '横盘后 MA60 仍在上行但 MA5 已经走平');
+    assert.equal(d7.maBull, false);
+  }
   // 仍是多头排列，但短期均线已经拐头 → 必须被剔除（用户 2026-10-07 的要求）
   {
     // 稳步上涨中最后一天收跌 0.60：MA5 掉头，但 MA5 仍在 MA10 上方 → 只看排列会误选

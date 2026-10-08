@@ -594,8 +594,9 @@ export const FILTER_DEFS = [
     label: '红柱（收阳）且实体 ≥ 前收盘 6%，且收盘处于近 20 日区间的下 20%' },
   { bit: 64, key: 'bigGreen', short: '顶部大实体绿柱',
     label: '绿柱（收阴）且实体 ≥ 前收盘 6%，且收盘处于近 20 日区间的上 20%' },
-  { bit: 128, key: 'maBull', short: '多头排列+短均向上',
-    label: '均线多头排列**且短期均线仍在上行**：MA5 > MA10 > MA20 > MA60，并且 MA5、MA10 都高于昨日'
+  { bit: 128, key: 'maBull', short: '多头排列+末端上行',
+    label: '均线多头排列且末端仍在上行：MA5 > MA10 > MA20 > MA60，'
+          + '四条均线都高于昨日（不是只有短均线动），MA5 已连续上行 ≥3 天，且收盘价在 MA5 之上'
           + '（只看排列不看斜率的话，末端已经走平 / 拐头下跌的也会被选中）' },
 ];
 export const FILTER_ALL = FILTER_DEFS.reduce((a, d) => a | d.bit, 0);
@@ -667,24 +668,33 @@ export function filterDetail(bars, i, macdRes, opt = {}) {
   const pos = span20 > 0 ? (c[i] - lo20) / span20 : 0.5;    // 收盘在近 20 日区间的位置
   const bigRed = c[i] > o[i] && bigBody && pos <= 0.20;     // ⑥ 底部大实体红柱
   const bigGreen = c[i] < o[i] && bigBody && pos >= 0.80;   // ⑦ 顶部大实体绿柱
-  // ⑧ 均线多头排列 + 短期均线仍在上行：
+  // ⑧ 均线多头排列 + 末端仍在上行（口径来自用户 2026-10-07 给的样图：sh603958 哈森股份
+  //    2026-04-16，四条均线都在上行、MA5 已连涨 7 天、收盘在 MA5 上方 7.5%）：
   //    · MA5 > MA10 > MA20 > MA60（排列）
-  //    · MA5、MA10 都高于昨日（末端还在往上走，剔除已经走平/拐头的那批）
-  //    用户 2026-10-07 反馈：只判排列时，会出现"均线末端仍是多头、但短期均线已经不再向上"
-  //    的一大堆票（实测占原命中的 29.9%），要求剔除。
+  //    · 四条均线都高于昨日          —— 排除"只有短均线在动、长均线已经走平"的
+  //    · MA5 连续上行 ≥3 天          —— 排除"刚拐头一天"的，要的是已经走了一段
+  //    · 收盘价在 MA5 之上           —— 图里价格是骑在均线上方的
   const ma5 = smaAt(c, i, 5), ma10 = smaAt(c, i, 10),
         ma20 = smaAt(c, i, 20), ma60 = smaAt(c, i, 60);
-  const ma5p = smaAt(c, i - 1, 5), ma10p = smaAt(c, i - 1, 10);
+  const ma5p = smaAt(c, i - 1, 5), ma10p = smaAt(c, i - 1, 10),
+        ma20p = smaAt(c, i - 1, 20), ma60p = smaAt(c, i - 1, 60);
   const maBullAligned = ma5 - ma10 > MA_EPS && ma10 - ma20 > MA_EPS && ma20 - ma60 > MA_EPS;
-  const maBullRising = ma5 - ma5p > MA_EPS && ma10 - ma10p > MA_EPS;
-  const maBull = maBullAligned && maBullRising;
+  const maBullRising = ma5 - ma5p > MA_EPS && ma10 - ma10p > MA_EPS &&
+                       ma20 - ma20p > MA_EPS && ma60 - ma60p > MA_EPS;
+  let ma5RiseDays = 0;                       // MA5 连续上行的天数（含当日）
+  for (let t = i; t >= 1; t--) {
+    if (smaAt(c, t, 5) - smaAt(c, t - 1, 5) > MA_EPS) ma5RiseDays++; else break;
+  }
+  const aboveMA5 = c[i] - ma5 > MA_EPS;
+  const maBull = maBullAligned && maBullRising && ma5RiseDays >= 3 && aboveMA5;
   const mask = (pullback ? 1 : 0) | (up2 ? 2 : 0) | (break2 ? 4 : 0) |
                (breakPrior ? 8 : 0) | (macdCross ? 16 : 0) |
                (bigRed ? 32 : 0) | (bigGreen ? 64 : 0) | (maBull ? 128 : 0);
   return { ready: true, mask, dd, priorIdx: pj, priorHigh: ph, bullish,
            trendUp, inRange, down2, pullback, up2, break2, breakPrior, macdCross,
            body, bigBody, pos, bigRed, bigGreen, ma5, ma10, ma20, ma60,
-           ma5p, ma10p, maBullAligned, maBullRising, maBull };
+           ma5p, ma10p, ma20p, ma60p, maBullAligned, maBullRising,
+           ma5RiseDays, aboveMA5, maBull };
 }
 
 /** mask 是否覆盖选中的全部条件 */

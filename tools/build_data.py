@@ -202,7 +202,8 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
       16 MACD 零下金叉（DIF 上穿 DEA 且 DIF < 0）
       32 底部大实体红柱：收阳 且 实体 ≥ 前收盘6% 且 收盘在近20日区间下20%
       64 顶部大实体绿柱：收阴 且 实体 ≥ 前收盘6% 且 收盘在近20日区间上20%
-      128 均线多头排列且短期均线仍在上行：MA5 > MA10 > MA20 > MA60，且 MA5、MA10 高于昨日
+      128 均线多头排列且末端仍在上行：MA5>MA10>MA20>MA60，四条都高于昨日，
+          MA5 连续上行≥3天，且收盘价在 MA5 之上
     """
     nd = len(axis["dates"])
     m = np.zeros(nd, dtype=np.uint8)
@@ -233,6 +234,13 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
         out[k - 1:] = (cs[k:] - cs[:-k]) / k
         return out
     ma5, ma10, ma20, ma60 = _sma(cl, 5), _sma(cl, 10), _sma(cl, 20), _sma(cl, 60)
+    # MA5 连续上行的天数（以每根 bar 结尾）
+    ma5_up = np.zeros(n, bool)
+    if n > 1:
+        ma5_up[1:] = ma5[1:] - ma5[:-1] > MA_EPS
+    ma5_run = np.zeros(n, np.int32)
+    for _i in range(1, n):
+        ma5_run[_i] = ma5_run[_i - 1] + 1 if ma5_up[_i] else 0
 
     # prior_hi[i] = max(hi[max(0,i-N):i])：近 N 根、**不含当日**的最高价
     # 用区间最高价而不是分形拐点 —— 分形高点必须等右侧 k 根走完才能确认，
@@ -285,10 +293,13 @@ def filter_masks(code: str, axis: dict, out_dir: str = None):
             v |= 32
         if big and cl[i] < op[i] and pos >= 0.80:
             v |= 64
-        # ⑧ 均线多头排列 + 短期均线仍在上行（容差 MA_EPS 抵消 np.sum 与 JS 顺序累加的差异）
+        # ⑧ 均线多头排列 + 末端仍在上行（与 sim.js 同口径；容差 MA_EPS 抵消浮点求和顺序差异）
+        #    排列 + 四条都高于昨日 + MA5 连续上行≥3天 + 收盘在 MA5 之上
         if (ma5[i] - ma10[i] > MA_EPS and ma10[i] - ma20[i] > MA_EPS
                 and ma20[i] - ma60[i] > MA_EPS
-                and ma5[i] - ma5[i - 1] > MA_EPS and ma10[i] - ma10[i - 1] > MA_EPS):
+                and ma5[i] - ma5[i - 1] > MA_EPS and ma10[i] - ma10[i - 1] > MA_EPS
+                and ma20[i] - ma20[i - 1] > MA_EPS and ma60[i] - ma60[i - 1] > MA_EPS
+                and ma5_run[i] >= 3 and cl[i] - ma5[i] > MA_EPS):
             v |= 128
         m[k] = v
     return m
