@@ -896,6 +896,9 @@ function bind() {
     // 图例只列**正在显示**的均线
     $('leg-ma').innerHTML = state.chart.maLegend
       .map(x => `<i class="line" style="background:${x.color}"></i>MA${x.p}`).join(' ');
+    // 成交量均线单独一段图例（量MA5 / 量MA20）
+    $('leg-vma').innerHTML = state.chart.volMALegend
+      .map(x => `<i class="line" style="background:${x.color}"></i>量MA${x.p}`).join(' ');
     const v = state.chart.maCustom;
     $('ma-custom-on').checked = !!v;
     $('leg-custom').classList.toggle('hidden', !v);
@@ -906,6 +909,14 @@ function bind() {
     cb.checked = !!state.chart.maOn[p];
     cb.addEventListener('change', () => {
       state.chart.setMAOn(p, cb.checked);
+      syncMAUI();
+    });
+  });
+  document.querySelectorAll('#ma-dd input[data-vma]').forEach(cb => {
+    const p = Number(cb.dataset.vma);
+    cb.checked = !!state.chart.volMAOn[p];
+    cb.addEventListener('change', () => {
+      state.chart.setVolMAOn(p, cb.checked);
       syncMAUI();
     });
   });

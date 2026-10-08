@@ -153,7 +153,10 @@ const MA_RGB = { 5: [245, 158, 11], 10: [56, 189, 248], 20: [192, 132, 252], 60:
 check(await page.$eval('#ma-dd', el => el.classList.contains('hidden')), '均线下拉默认应收起');
 await page.click('#btn-ma'); await wait(250);
 check(!(await page.$eval('#ma-dd', el => el.classList.contains('hidden'))), '点均线按钮应展开下拉');
-check((await page.$$eval('#ma-dd .dd-item', els => els.length)) === 4, '下拉里应有 4 条内置均线');
+check((await page.$$eval('#ma-dd .dd-item', els => els.length)) === 6,
+      '下拉里应有 6 条：4 条价格均线 + 量MA5/量MA20');
+check((await page.$$eval('#ma-dd input[data-vma]', els => els.length)) === 2,
+      '成交量均线应有 2 条（量MA5 / 量MA20）');
 const p5before = await oneColor(MA_RGB[5]), p10before = await oneColor(MA_RGB[10]);
 await page.evaluate(() => { const cb = document.querySelector('#ma-dd input[data-ma="5"]'); cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true })); });
 await wait(350);
@@ -176,6 +179,56 @@ await page.evaluate(() => document.querySelectorAll('#ma-dd input[data-ma]').for
 }));
 await wait(350);
 check((await maPixels()) > 500, '重新勾选后应恢复均线');
+
+// 成交量均线：画在成交量副图里（量MA5 黄 / 量MA20 青绿）
+const volPanePixels = (kind) => page.evaluate((kind) => {
+  const src = document.getElementById('chart');
+  const c = document.createElement('canvas'); c.width = src.width; c.height = src.height;
+  const x = c.getContext('2d'); x.drawImage(src, 0, 0);
+  const ch = window.__kline.chart, g = ch._geom().vol;
+  const k = src.width / ch.W;                       // 设备像素 / CSS 像素
+  const y0 = Math.max(0, Math.floor(g.y * k));
+  const y1 = Math.min(c.height, Math.ceil((g.y + g.h) * k));
+  const d = x.getImageData(0, y0, c.width, Math.max(1, y1 - y0)).data;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], gg = d[i + 1], b = d[i + 2];
+    if (kind === 'yellow' ? (r > 200 && gg > 160 && gg < 235 && b < 90)
+                          : (r < 110 && gg > 170 && b > 140 && b < 225)) n++;
+  }
+  return n;
+}, kind);
+const vmaOn = { y: await volPanePixels('yellow'), t: await volPanePixels('teal') };
+console.log('   量均线像素(默认开):', JSON.stringify(vmaOn));
+check(vmaOn.y > 300 && vmaOn.t > 300, '默认应在成交量副图里画出量MA5(黄)与量MA20(青绿)');
+check((await page.$eval('#leg-vma', el => el.textContent.replace(/\s+/g, ''))).includes('量MA5量MA20'),
+      '图例应列出 量MA5 量MA20');
+check(await page.evaluate(() => {
+  const c = window.__kline.chart, s = window.__kline.session, i = s.cur, v = s.bars.vol;
+  const ref = (n) => { let t = 0; for (let k = i - n + 1; k <= i; k++) t += v[k]; return t / n; };
+  return Math.abs(c.volMA[0][i] - ref(5)) < 1 && Math.abs(c.volMA[1][i] - ref(20)) < 1;
+}), '量MA5/量MA20 的值应等于对应天数的成交量均值');
+// 关掉量MA5 → 黄色消失、青绿仍在
+await page.evaluate(() => { const cb = document.querySelector('#ma-dd input[data-vma="5"]'); cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true })); });
+await wait(350);
+check((await volPanePixels('yellow')) < vmaOn.y * 0.15, '关掉量MA5 后黄线应消失');
+check((await volPanePixels('teal')) > vmaOn.t * 0.5, '关掉量MA5 不应影响量MA20');
+check(await page.evaluate(() => window.__kline.chart.volMAOnCount) === 1, 'volMAOnCount 应为 1');
+// 两条都关 → 全没了，图例清空
+await page.evaluate(() => document.querySelectorAll('#ma-dd input[data-vma]').forEach(cb => {
+  cb.checked = false; cb.dispatchEvent(new Event('change', { bubbles: true }));
+}));
+await wait(350);
+check((await volPanePixels('yellow')) < 50 && (await volPanePixels('teal')) < 50, '全关后量均线应消失');
+check((await page.$eval('#leg-vma', el => el.textContent.trim())) === '', '全关后量均线图例应为空');
+// 关掉量均线不能影响价格均线
+check((await maPixels()) > 500, '关量均线不应影响价格均线');
+// 恢复
+await page.evaluate(() => document.querySelectorAll('#ma-dd input[data-vma]').forEach(cb => {
+  cb.checked = true; cb.dispatchEvent(new Event('change', { bubbles: true }));
+}));
+await wait(350);
+check((await volPanePixels('yellow')) > 300, '重新勾选后量均线应恢复');
 
 // 自定义均线：输入天数 → 多一条独立均线（不归内置均线的开关管）
 const cyanPixels = () => page.evaluate(() => {

@@ -1,5 +1,5 @@
 /**
- * Canvas K 线图：K 线 + 成交量 + 买卖标记 + 成本线 + 十字光标。
+ * Canvas K 线图：K 线 + 成交量（含量 MA5/MA20）+ 买卖标记 + 成本线 + 十字光标。
  * 不依赖任何第三方库；A 股配色（红涨绿跌）。
  */
 import { fmtDate, fmtVol, fmtAmount } from './decode.js';
@@ -14,6 +14,9 @@ const GRID = 'rgba(148,163,184,0.13)';
 const CROSS = 'rgba(226,232,240,0.75)';
 const MA_COLORS = ['#f59e0b', '#38bdf8', '#c084fc', '#f472b6'];
 const MA_CUSTOM_COLOR = '#22d3ee';   // 自定义均线（输入天数）用青色
+/** 成交量均线：量MA5 黄 / 量MA20 青绿（和价格均线那套配色错开） */
+export const VOL_MA_PERIODS = [5, 20];
+const VMA_COLORS = { 5: '#facc15', 20: '#2dd4bf' };
 
 function niceTicks(min, max, count) {
   if (!(max > min)) return [min];
@@ -44,6 +47,9 @@ export class KChart {
     this.maCustom = 0;        // 自定义均线周期（工具栏输入框，0 = 不显示）
     this.maCustomArr = null;
     this.maOn = { 5: true, 10: true, 20: true, 60: true };   // 每条内置均线独立开关
+    // 成交量均线（画在成交量副图里，单独一套开关，默认开）
+    this.volMA = [];
+    this.volMAOn = { 5: true, 20: true };
     this.showMACD = true;   // MACD 副图
     this.macdRes = null;
     this.lines = [];        // 手动画线，锚在「数据坐标」(bar 下标, 价格)，缩放平移后不会漂
@@ -65,6 +71,7 @@ export class KChart {
     if (bars) {
       this.ma = this.maPeriods.map(p => movingAverage(bars.close, p));
       this.maCustomArr = this.maCustom >= 2 ? movingAverage(bars.close, this.maCustom) : null;
+      this.volMA = VOL_MA_PERIODS.map(p => movingAverage(bars.vol, p));
       this.macdRes = macd(bars.close);
       const end = limit;
       const from = Math.max(0, end - Math.min(120, end + 1) + 1);
@@ -118,6 +125,22 @@ export class KChart {
   }
   /** 内置全关且无自定义线时视为「均线关闭」 */
   get showMA() { return this.maOnCount > 0; }
+  /** 单条成交量均线开关 */
+  setVolMAOn(period, on) {
+    if (!(period in this.volMAOn)) return;
+    this.volMAOn[period] = !!on;
+    this.render();
+  }
+  /** 一次性开关全部成交量均线（保留给自动化测试用） */
+  setShowVolMA(on) {
+    for (const p of VOL_MA_PERIODS) this.volMAOn[p] = !!on;
+    this.render();
+  }
+  get volMAOnCount() { return VOL_MA_PERIODS.filter(p => this.volMAOn[p]).length; }
+  /** 图例用：正在显示的成交量均线 [{p, color}] */
+  get volMALegend() {
+    return VOL_MA_PERIODS.map(p => ({ p, color: VMA_COLORS[p] })).filter(x => this.volMAOn[x.p]);
+  }
   /** 设置自定义均线周期（天数）。0 或非法值 = 关掉 */
   setCustomMA(n) {
     const v = Math.floor(Number(n) || 0);
@@ -231,6 +254,18 @@ export class KChart {
         }
       }
     }
+    {
+      // 成交量副图的纵轴也要把**正在显示的**量均线算进去：
+      // 20 日均量有可能高于可视区间内的最大量柱（那根天量已经滚出屏幕），否则线会被裁掉
+      if (this.volMA && this.volMA.length) {
+        VOL_MA_PERIODS.forEach((p, k) => {
+          if (!this.volMAOn[p]) return;
+          const arr = this.volMA[k];
+          if (!arr) return;
+          for (let i = vf; i <= vt; i++) { const v = arr[i]; if (isFinite(v) && v > vmax) vmax = v; }
+        });
+      }
+    }
     if (pmin === Infinity) { pmin = 0; pmax = 1; }
     const padP = (pmax - pmin) * 0.06 || pmax * 0.01 || 1;
     pmin -= padP; pmax += padP;
@@ -329,6 +364,28 @@ export class KChart {
       ctx.fillStyle = up ? 'rgba(239,68,68,0.55)' : 'rgba(34,197,94,0.55)';
       const y = yV(bars.vol[i]);
       ctx.fillRect(x - bodyW / 2, y, bodyW, g.vol.y + g.vol.h - y);
+    }
+
+    // --- 成交量均线（量MA5 / 量MA20，画在成交量副图里）
+    if (this.volMA && this.volMA.length) {
+      ctx.save();
+      ctx.lineWidth = 1.2;
+      VOL_MA_PERIODS.forEach((p, k) => {
+        if (!this.volMAOn[p]) return;
+        const arr = this.volMA[k];
+        if (!arr) return;
+        ctx.strokeStyle = VMA_COLORS[p];
+        ctx.beginPath();
+        let started = false;
+        for (let i = vf; i <= vt; i++) {
+          const v = arr[i];
+          if (!isFinite(v)) { started = false; continue; }
+          const x = this._x(i, g), y = yV(v);
+          if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      });
+      ctx.restore();
     }
 
     // --- 成本线
@@ -498,6 +555,15 @@ export class KChart {
       // 与真实成交额的中位偏差 0.2%、99 分位 1.7%（见 tools/verify_data.py）
       ['成交额≈', fmtAmount((b.high[i] + b.low[i] + b.close[i]) / 3 * b.vol[i]) + '元'],
     ];
+    {                                        // 成交量均线的值（和成交量放在一起，方便看放量/缩量）
+      if (this.volMA && this.volMA.length) {
+        VOL_MA_PERIODS.forEach((p, k) => {
+          if (!this.volMAOn[p]) return;
+          const v = this.volMA[k] ? this.volMA[k][i] : NaN;
+          if (isFinite(v)) lines.push(['量MA' + p, fmtVol(v), VMA_COLORS[p]]);
+        });
+      }
+    }
     if (this.showMACD && this.macdRes) {
       const { dif, dea, hist } = this.macdRes;
       lines.push(['MACD', hist[i].toFixed(3), MUTED]);

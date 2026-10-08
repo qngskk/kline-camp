@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>重生之K线股王 · K线训练营</title>
 <meta name="description" content="使用真实历史行情（前复权）逐日推演的 K 线交易训练营：随机股票 + 随机日期，次日开盘价成交，实时记录盈亏。">
-<link rel="stylesheet" href="css/app.css?v=20261007a">
+<link rel="stylesheet" href="css/app.css?v=20261007b">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230f172a'/%3E%3Crect x='14' y='20' width='8' height='26' fill='%23ef4444'/%3E%3Crect x='28' y='14' width='8' height='34' fill='%2322c55e'/%3E%3Crect x='42' y='24' width='8' height='24' fill='%23ef4444'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -41,6 +41,9 @@
           <label class="dd-item"><input type="checkbox" data-ma="10" checked> <span class="ma-dot" style="background:#38bdf8"></span>MA10</label>
           <label class="dd-item"><input type="checkbox" data-ma="20" checked> <span class="ma-dot" style="background:#c084fc"></span>MA20</label>
           <label class="dd-item"><input type="checkbox" data-ma="60" checked> <span class="ma-dot" style="background:#f472b6"></span>MA60</label>
+          <div class="dd-title dd-title-2">成交量均线（画在成交量副图里）</div>
+          <label class="dd-item"><input type="checkbox" data-vma="5" checked> <span class="ma-dot" style="background:#facc15"></span>量 MA5</label>
+          <label class="dd-item"><input type="checkbox" data-vma="20" checked> <span class="ma-dot" style="background:#2dd4bf"></span>量 MA20</label>
           <div class="dd-ma-custom">
             <input type="checkbox" id="ma-custom-on">
             <span class="ma-dot" style="background:#22d3ee"></span>
@@ -61,7 +64,7 @@
     <div id="chart-box"><canvas id="chart"></canvas></div>
     <div id="chart-foot">
       <span class="legend"><i class="dot" style="background:#ef4444"></i>涨 / 买入 <i class="dot" style="background:#22c55e"></i>跌 / 卖出</span>
-      <span class="legend" id="leg-ma"></span><span class="legend"><i class="line" style="background:#f8fafc"></i>DIF <i class="line" style="background:#fbbf24"></i>DEA<span id="leg-custom" class="hidden"> <i class="line" style="background:#22d3ee"></i>MA<b id="leg-custom-n"></b></span></span>
+      <span class="legend" id="leg-ma"></span><span class="legend" id="leg-vma"></span><span class="legend"><i class="line" style="background:#f8fafc"></i>DIF <i class="line" style="background:#fbbf24"></i>DEA<span id="leg-custom" class="hidden"> <i class="line" style="background:#22d3ee"></i>MA<b id="leg-custom-n"></b></span></span>
       <span class="legend muted" id="chart-tip">滚轮缩放 · 拖拽平移 · 双击复位 · 悬停查看单根 K 线</span>
     </div>
   </section>
@@ -241,6 +244,7 @@
       <li><b>减仓</b>：减 1/4 / 1/3 / 1/2 = 卖出「当前可卖持仓 × 比例」；「清仓」= 卖出全部可卖持仓。均按一手 100 股向下取整。</li>
       <li><b>T+1</b>：同一批委托里刚买入的股票，当批不可再卖出（尾盘口径下就是"当日买入当日不可卖"）。</li>
       <li>成交价触及涨停买不进、触及跌停卖不出（主板 ±10%，创业板/科创板 ±20%）。</li>
+      <li><b>图上的均线</b>：工具栏「均线」下拉里可以逐条开关价格的 MA5/10/20/60（含一条自定天数）；同一面板下面还有<b>成交量均线</b>——量 MA5（黄）与量 MA20（青绿），画在成交量副图里，默认都开。</li>
       <li>操作满 30 / 60 / 90 个交易日后自动结算，剩余持仓按最后一日收盘价折算。</li>
       <li>「结束交易」：尾盘模式按当收即时清仓；次日开盘价模式放弃今日委托、按次日开盘价清仓。</li>
       <li><b>出问题了？</b>按 <b>Ctrl+Shift+D</b>（或在 Console 里执行 <code>__kline.report()</code>）会把股票代码、当前日期、进度、cur/lastIdx、本局结束日、K 线最后一根的日期、换股记录、报错日志等复制到剪贴板，直接贴给作者即可定位。</li>
@@ -297,6 +301,6 @@
   </div>
 </div>
 
-<script type="module" src="js/app.js?v=20261007a"></script>
+<script type="module" src="js/app.js?v=20261007b"></script>
 </body>
 </html>
